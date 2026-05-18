@@ -1,7 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Brain, AlertTriangle, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  Brain,
+  AlertTriangle,
+  Check,
+  RefreshCw,
+  X as XIcon,
+} from "lucide-react";
 
 import { customFetch, ApiError } from "@/api/mutator";
 import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
@@ -16,6 +22,15 @@ type CaioBridgeStatus =
   | "circuit_open"
   | "timeout";
 
+type CaioDecisionKind = "approve" | "reject";
+
+type CaioEventDecisionRead = {
+  decision: CaioDecisionKind;
+  decided_at: string;
+  decided_by_user_id: string;
+  note: string | null;
+};
+
 type CaioEventItem = {
   event_id: string;
   occurred_at: string;
@@ -25,6 +40,7 @@ type CaioEventItem = {
   correlation_id: string | null;
   thread_id: string | null;
   payload: Record<string, unknown> | null;
+  decision: CaioEventDecisionRead | null;
 };
 
 type CaioRecentEventsResponse = {
@@ -32,6 +48,15 @@ type CaioRecentEventsResponse = {
   error_class: string | null;
   latency_ms: number;
   items: CaioEventItem[];
+};
+
+type CaioDecisionResponse = {
+  event_id: string;
+  decision: CaioDecisionKind;
+  decided_at: string;
+  decided_by_user_id: string;
+  note: string | null;
+  mode: "mark_only";
 };
 
 const EVENT_TYPE_BADGES: Record<string, { label: string; tone: string }> = {
@@ -76,7 +101,6 @@ function formatPayloadSummary(item: CaioEventItem): string {
   if (!payload || typeof payload !== "object") {
     return "(no payload)";
   }
-  // Common shapes: { action, rationale, level, action_type, advisor_name, ... }
   if (typeof payload.action === "string" && payload.action) {
     return payload.action as string;
   }
@@ -106,7 +130,10 @@ function levelBadge(item: CaioEventItem): string | null {
   return null;
 }
 
-function statusMessage(status: CaioBridgeStatus, errorClass: string | null): string {
+function statusMessage(
+  status: CaioBridgeStatus,
+  errorClass: string | null,
+): string {
   switch (status) {
     case "ok":
       return "";
@@ -127,8 +154,12 @@ export default function CaioPage() {
   );
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // event_ids currently in-flight for a decision POST; disables their buttons.
+  const [pendingDecisions, setPendingDecisions] = useState<Set<string>>(
+    () => new Set(),
+  );
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setErrorMessage(null);
     try {
@@ -148,7 +179,64 @@ export default function CaioPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  const markDecision = useCallback(
+    async (eventId: string, decision: CaioDecisionKind) => {
+      setPendingDecisions((prev) => {
+        const next = new Set(prev);
+        next.add(eventId);
+        return next;
+      });
+      setErrorMessage(null);
+      try {
+        const result = await customFetch<{ data: CaioDecisionResponse }>(
+          "/api/v1/caio/think-loop/decisions",
+          {
+            method: "POST",
+            body: JSON.stringify({ event_id: eventId, decision }),
+          },
+        );
+        const fresh = result.data;
+        // Optimistically patch the local list so the UI updates instantly.
+        setResponse((prev) =>
+          prev
+            ? {
+                ...prev,
+                items: prev.items.map((item) =>
+                  item.event_id === eventId
+                    ? {
+                        ...item,
+                        decision: {
+                          decision: fresh.decision,
+                          decided_at: fresh.decided_at,
+                          decided_by_user_id: fresh.decided_by_user_id,
+                          note: fresh.note,
+                        },
+                      }
+                    : item,
+                ),
+              }
+            : prev,
+        );
+      } catch (err) {
+        const msg =
+          err instanceof ApiError
+            ? `${err.status}: ${err.message}`
+            : err instanceof Error
+              ? err.message
+              : "Failed to mark decision";
+        setErrorMessage(msg);
+      } finally {
+        setPendingDecisions((prev) => {
+          const next = new Set(prev);
+          next.delete(eventId);
+          return next;
+        });
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     void load();
@@ -156,7 +244,7 @@ export default function CaioPage() {
       void load();
     }, 30_000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [load]);
 
   const items = response?.items ?? [];
   const statusBanner =
@@ -177,7 +265,7 @@ export default function CaioPage() {
           Caio · Think Loop
         </span>
       }
-      description="Últimas decisões e propostas autônomas do Caio (read-only — V1.1 não executa downstream)."
+      description="Últimas decisões e propostas autônomas do Caio. Approve/reject é mark_only — registra no Cockpit DB sem disparar nada nos pipelines do Caio."
       headerActions={
         <Button
           variant="outline"
@@ -226,6 +314,8 @@ export default function CaioPage() {
               tone: "bg-slate-100 text-slate-800",
             };
             const level = levelBadge(item);
+            const decided = item.decision;
+            const pending = pendingDecisions.has(item.event_id);
             return (
               <Card key={item.event_id}>
                 <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
@@ -240,6 +330,24 @@ export default function CaioPage() {
                         {level}
                       </Badge>
                     ) : null}
+                    {decided ? (
+                      <span
+                        className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-semibold ${
+                          decided.decision === "approve"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-rose-100 text-rose-800"
+                        }`}
+                      >
+                        {decided.decision === "approve" ? (
+                          <Check className="h-3 w-3" />
+                        ) : (
+                          <XIcon className="h-3 w-3" />
+                        )}
+                        {decided.decision === "approve"
+                          ? "Aprovado"
+                          : "Rejeitado"}
+                      </span>
+                    ) : null}
                     <span className="text-xs font-normal text-slate-500">
                       {item.source}
                     </span>
@@ -249,7 +357,54 @@ export default function CaioPage() {
                   </span>
                 </CardHeader>
                 <CardContent className="pt-2 text-sm text-slate-700">
-                  {formatPayloadSummary(item)}
+                  <p className="whitespace-pre-wrap">
+                    {formatPayloadSummary(item)}
+                  </p>
+                  <div className="mt-3 flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={
+                        decided?.decision === "approve" ? "primary" : "outline"
+                      }
+                      className={
+                        decided?.decision === "approve"
+                          ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                          : "border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                      }
+                      onClick={() => {
+                        void markDecision(item.event_id, "approve");
+                      }}
+                      disabled={pending}
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                      {decided?.decision === "approve" ? "Aprovado" : "Aprovar"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={
+                        decided?.decision === "reject" ? "primary" : "outline"
+                      }
+                      className={
+                        decided?.decision === "reject"
+                          ? "bg-rose-600 text-white hover:bg-rose-700"
+                          : "border-rose-200 text-rose-800 hover:bg-rose-50"
+                      }
+                      onClick={() => {
+                        void markDecision(item.event_id, "reject");
+                      }}
+                      disabled={pending}
+                    >
+                      <XIcon className="h-3.5 w-3.5" />
+                      {decided?.decision === "reject" ? "Rejeitado" : "Rejeitar"}
+                    </Button>
+                    {pending ? (
+                      <span className="text-xs text-slate-500">salvando…</span>
+                    ) : decided ? (
+                      <span className="text-xs text-slate-500">
+                        em {formatOccurredAt(decided.decided_at)} · mark_only
+                      </span>
+                    ) : null}
+                  </div>
                 </CardContent>
               </Card>
             );

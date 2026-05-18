@@ -11,6 +11,7 @@ from app.models.board_onboarding import BoardOnboardingSession
 from app.models.board_webhook_payloads import BoardWebhookPayload
 from app.models.board_webhooks import BoardWebhook
 from app.models.boards import Board
+from app.models.caio_decisions import CaioEventDecision
 from app.models.gateways import Gateway
 from app.models.organization_board_access import OrganizationBoardAccess
 from app.models.organization_invite_board_access import OrganizationInviteBoardAccess
@@ -42,6 +43,7 @@ __all__ = [
     "BoardOnboardingSession",
     "BoardGroup",
     "Board",
+    "CaioEventDecision",
     "Gateway",
     "GatewayInstalledSkill",
     "MarketplaceSkill",

@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     caio_bridge_events_enabled: bool = True
     caio_bridge_timeout_s: float = 2.0
 
+    # V1.1 Cockpit approve/reject mode. Hard-locked to "mark_only": writing a
+    # decision only updates the Cockpit DB and NEVER dispatches downstream into
+    # Caio's pipelines (#wa-aprovacoes, OpenClaw gateway, events.sqlite, etc).
+    # V2 will introduce "mark_and_execute" behind an idempotency + audit guard.
+    cockpit_approve_mode: str = "mark_only"
+
     # Logging
     log_level: str = "INFO"
     log_format: str = "text"
