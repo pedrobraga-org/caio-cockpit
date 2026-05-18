@@ -9,6 +9,7 @@ import {
   Activity,
   Bot,
   Boxes,
+  Brain,
   ChevronDown,
   LayoutDashboard,
   LogOut,
@@ -155,6 +156,7 @@ export function UserMenu({
             [
               { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
               { href: "/activity", label: "Activity", icon: Activity },
+              { href: "/caio", label: "Caio", icon: Brain },
               { href: "/agents", label: "Agents", icon: Bot },
               { href: "/gateways", label: "Gateways", icon: Server },
               {
