@@ -165,9 +165,53 @@ type RenderedSummary = {
   body: string;
   /** Optional inline badges shown next to the event type badge. */
   badges: { label: string; tone: string }[];
+  /** Plain-PT-BR "impacto real" line — what actually happens in the world. */
+  impact?: string;
+  /** Visual tone for the impact badge. */
+  impactTone?: string;
 };
 
-function renderSummary(item: CaioEventItem): RenderedSummary {
+const LEVEL_MEANING: Record<string, string> = {
+  L1: "Apenas anotar — Caio só registra, nada é proposto a você",
+  L2: "Sugerir — Caio te mostra a ideia, mas espera você decidir",
+  L3: "Auto-executar — Caio age sem te perguntar (autonomia média)",
+  L4: "Bloqueado até Pedro autorizar — ação crítica reservada para você",
+};
+
+function modeMeaning(mode: string | null): {
+  text: string;
+  tone: string;
+  label: string;
+} {
+  if (mode === "shadow") {
+    return {
+      text:
+        "Modo simulado: Caio ESCREVEU a decisão no log mas NÃO executou nada " +
+        "no mundo real (nem WhatsApp, nem código, nem nada externo).",
+      tone: "bg-slate-100 text-slate-700",
+      label: "simulado · sem efeito real",
+    };
+  }
+  if (mode === "live") {
+    return {
+      text:
+        "Modo live: ação EXECUTADA de fato no canal/sistema correspondente. " +
+        "Veja o card 'Dispatched' relacionado se houve confirmação.",
+      tone: "bg-emerald-100 text-emerald-700",
+      label: "executado de verdade",
+    };
+  }
+  return {
+    text: `Modo '${mode ?? "?"}': comportamento não traduzido na UI.`,
+    tone: "bg-slate-100 text-slate-700",
+    label: mode ?? "?",
+  };
+}
+
+function renderSummary(
+  item: CaioEventItem,
+  pairedProposal?: CaioEventItem,
+): RenderedSummary {
   const payload = (item.payload ?? {}) as Record<string, unknown>;
   const badges: { label: string; tone: string }[] = [];
 
@@ -192,11 +236,13 @@ function renderSummary(item: CaioEventItem): RenderedSummary {
       });
     }
     if (mode) {
+      const mm = modeMeaning(mode);
       badges.push({
-        label: `mode ${mode}`,
-        tone: mode === "shadow"
-          ? "bg-slate-50 text-slate-600 border border-slate-200"
-          : "bg-emerald-50 text-emerald-700 border border-emerald-200",
+        label: mm.label,
+        tone:
+          mode === "shadow"
+            ? "bg-slate-50 text-slate-600 border border-slate-200"
+            : "bg-emerald-50 text-emerald-700 border border-emerald-200",
       });
     }
     if (requiresInput) {
@@ -205,10 +251,16 @@ function renderSummary(item: CaioEventItem): RenderedSummary {
         tone: "bg-amber-50 text-amber-800 border border-amber-200",
       });
     }
+    const mm = modeMeaning(mode);
     return {
-      title: "Proposta do Caio (Think Loop)",
-      body: rationale ? `${action}\n\nRationale: ${rationale}` : action,
+      title: "Proposta do Caio",
+      body: rationale ? `${action}\n\nPor quê: ${rationale}` : action,
       badges,
+      impact: requiresInput
+        ? `${mm.text} Caio marcou esta proposta como "precisa Pedro" — ` +
+          `geralmente vira card no canal correspondente para você decidir.`
+        : mm.text,
+      impactTone: mm.tone,
     };
   }
 
@@ -228,11 +280,13 @@ function renderSummary(item: CaioEventItem): RenderedSummary {
       });
     }
     if (mode) {
+      const mm = modeMeaning(mode);
       badges.push({
-        label: `mode ${mode}`,
-        tone: mode === "shadow"
-          ? "bg-slate-50 text-slate-600 border border-slate-200"
-          : "bg-emerald-50 text-emerald-700 border border-emerald-200",
+        label: mm.label,
+        tone:
+          mode === "shadow"
+            ? "bg-slate-50 text-slate-600 border border-slate-200"
+            : "bg-emerald-50 text-emerald-700 border border-emerald-200",
       });
     }
     if (certainty) {
@@ -242,7 +296,7 @@ function renderSummary(item: CaioEventItem): RenderedSummary {
       });
     }
     badges.push({
-      label: allowed ? "allowed" : "blocked",
+      label: allowed ? "permitido" : "bloqueado",
       tone: allowed
         ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
         : "bg-rose-50 text-rose-700 border border-rose-200",
@@ -259,16 +313,55 @@ function renderSummary(item: CaioEventItem): RenderedSummary {
         tone: "bg-rose-50 text-rose-700 border border-rose-200",
       });
     }
+
+    // Build the body — preferring to show the *actual* proposal text when
+    // we can pair it with the matching proposal event.
+    const proposalPayload = (pairedProposal?.payload ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const proposalText = asString(proposalPayload.action);
+    const proposalRationale = asString(proposalPayload.rationale);
+
+    const policySentence =
+      `Caio classificou esta ação como '${actionType}' e a política decidiu ` +
+      `${allowed ? "permitir" : "bloquear"}` +
+      `${level ? ` no nível ${level}` : ""}` +
+      `${mode ? `, ${modeMeaning(mode).label}` : ""}` +
+      `${requiresApproval ? ", aguardando aprovação Pedro" : ""}.` +
+      (hardRule ? `\nRegra dura disparada: ${hardRule}` : "");
+
+    const levelLine = level && LEVEL_MEANING[level]
+      ? `${level} significa: ${LEVEL_MEANING[level]}`
+      : "";
+
+    const bodyParts = [
+      proposalText ? `Proposta original do Caio:\n"${proposalText}"` : null,
+      proposalRationale ? `Por quê: ${proposalRationale}` : null,
+      policySentence,
+      levelLine || null,
+    ].filter(Boolean);
+
+    const mm = modeMeaning(mode);
+    let impact = mm.text;
+    if (!allowed) {
+      impact = `Bloqueada pela política. Nada executado. Caio aguarda nova proposta ou intervenção.`;
+    } else if (requiresApproval) {
+      impact =
+        `Aguardando aprovação do Pedro. Nada foi feito ainda; a ação é ` +
+        `disparada (em modo ${mode ?? "?"}) só depois que você responde no ` +
+        `canal de aprovação correspondente.`;
+    }
     return {
-      title: "Decisão de política (Think Loop)",
-      body:
-        `Caio classificou a proposta como '${actionType}' e a política decidiu ` +
-        `${allowed ? "permitir" : "bloquear"}` +
-        `${level ? ` no nível ${level}` : ""}` +
-        `${mode ? `, modo ${mode}` : ""}` +
-        `${requiresApproval ? ", aguardando aprovação Pedro" : ""}.` +
-        (hardRule ? `\nRegra dura disparada: ${hardRule}` : ""),
+      title: pairedProposal ? "Proposta + decisão" : "Decisão de política",
+      body: bodyParts.join("\n\n"),
       badges,
+      impact,
+      impactTone: !allowed
+        ? "bg-rose-100 text-rose-800"
+        : requiresApproval
+          ? "bg-amber-100 text-amber-800"
+          : mm.tone,
     };
   }
 
@@ -523,7 +616,51 @@ export default function CaioPage() {
     }
   }, [activeTab, critiquesResponse, loadCritiques]);
 
-  const items = response?.items ?? [];
+  const rawItems = response?.items ?? [];
+
+  // Pair each policy_decision with the proposal that immediately preceded it
+  // within ±2s (Caio writes both events back-to-back). The paired proposal is
+  // attached as a synthetic field so the policy card can show the actual
+  // proposal text; the consumed proposal is then dropped from the rendered
+  // list so Pedro sees one card per decision instead of two side-by-side.
+  const items: (CaioEventItem & { _pairedProposal?: CaioEventItem })[] = [];
+  const consumedProposalIds = new Set<string>();
+  for (let i = 0; i < rawItems.length; i++) {
+    const ev = rawItems[i];
+    if (ev.event_type === "think_loop.policy_decision") {
+      // proposal usually appears immediately AFTER policy_decision in DESC
+      // order because they share the timestamp and policy_decision is logged
+      // moments later. Look at neighbours within ±2s.
+      const evMs = Date.parse(ev.occurred_at);
+      let paired: CaioEventItem | undefined;
+      for (const cand of rawItems) {
+        if (cand.event_type !== "think_loop.proposal") continue;
+        if (consumedProposalIds.has(cand.event_id)) continue;
+        const dt = Math.abs(Date.parse(cand.occurred_at) - evMs);
+        if (Number.isFinite(dt) && dt <= 2000) {
+          paired = cand;
+          break;
+        }
+      }
+      if (paired) {
+        consumedProposalIds.add(paired.event_id);
+        items.push({ ...ev, _pairedProposal: paired });
+      } else {
+        items.push(ev);
+      }
+    } else {
+      items.push(ev);
+    }
+  }
+  // Filter out proposals that were merged into a policy_decision card.
+  const renderedItems = items.filter(
+    (it) =>
+      !(
+        it.event_type === "think_loop.proposal" &&
+        consumedProposalIds.has(it.event_id)
+      ),
+  );
+
   const statusBanner =
     response && response.status !== "ok"
       ? statusMessage(response.status, response.error_class, "Think Loop")
@@ -609,7 +746,7 @@ export default function CaioPage() {
 
           {loading && !response ? (
             <p className="text-sm text-slate-500">Carregando…</p>
-          ) : items.length === 0 ? (
+          ) : renderedItems.length === 0 ? (
             <Card>
               <CardContent className="py-6 text-sm text-slate-500">
                 Nenhum evento Caio nos últimos registros.
@@ -620,7 +757,7 @@ export default function CaioPage() {
             </Card>
           ) : (
             <div className="space-y-3">
-              {items.map((item) => {
+              {renderedItems.map((item) => {
                 const badge = EVENT_TYPE_BADGES[item.event_type] ?? {
                   label: item.event_type,
                   tone: "bg-slate-100 text-slate-800",
@@ -628,7 +765,7 @@ export default function CaioPage() {
                 const level = levelBadge(item);
                 const decided = item.decision;
                 const pending = pendingDecisions.has(item.event_id);
-                const summary = renderSummary(item);
+                const summary = renderSummary(item, item._pairedProposal);
                 const expanded = expandedEvents.has(item.event_id);
                 return (
                   <Card key={item.event_id}>
@@ -683,6 +820,20 @@ export default function CaioPage() {
                         {summary.title}
                       </p>
                       <p className="mt-1 whitespace-pre-wrap">{summary.body}</p>
+                      {summary.impact ? (
+                        <div
+                          className={`mt-3 rounded-md border border-slate-200 p-2 text-xs ${
+                            summary.impactTone ?? "bg-slate-50 text-slate-700"
+                          }`}
+                        >
+                          <p className="font-semibold uppercase tracking-wide">
+                            impacto real
+                          </p>
+                          <p className="mt-0.5 whitespace-pre-wrap">
+                            {summary.impact}
+                          </p>
+                        </div>
+                      ) : null}
                       <Button
                         size="sm"
                         variant="outline"
