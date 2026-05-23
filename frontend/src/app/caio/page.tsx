@@ -424,6 +424,58 @@ function renderSummary(
   };
 }
 
+type EventCategory = "pedro" | "blocked" | "history";
+
+function categorize(
+  item: CaioEventItem,
+  pairedProposal?: CaioEventItem,
+): EventCategory {
+  const payload = (item.payload ?? {}) as Record<string, unknown>;
+  const proposalPayload = (pairedProposal?.payload ?? {}) as Record<
+    string,
+    unknown
+  >;
+
+  if (item.event_type === "think_loop.policy_decision") {
+    const allowed = asBoolean(payload.allowed);
+    const requiresApproval = asBoolean(payload.requires_approval);
+    const requiresPedro = asBoolean(proposalPayload.requires_pedro_input);
+    const hardRule = asString(payload.hard_rule_triggered);
+    if (allowed === false || hardRule) return "blocked";
+    if (requiresApproval || requiresPedro) return "pedro";
+    return "history";
+  }
+
+  if (item.event_type === "think_loop.proposal") {
+    const requiresPedro = asBoolean(payload.requires_pedro_input);
+    return requiresPedro ? "pedro" : "history";
+  }
+
+  // advisor consults, dispatched, fallback reflexion notes — all informative.
+  return "history";
+}
+
+const CATEGORY_META: Record<
+  EventCategory,
+  { label: string; tone: string; ring: string }
+> = {
+  pedro: {
+    label: "🟢 Aguarda você",
+    tone: "bg-emerald-100 text-emerald-800",
+    ring: "ring-2 ring-emerald-200",
+  },
+  blocked: {
+    label: "🔴 Bloqueado",
+    tone: "bg-rose-100 text-rose-800",
+    ring: "ring-1 ring-rose-200",
+  },
+  history: {
+    label: "📜 Histórico",
+    tone: "bg-slate-100 text-slate-600",
+    ring: "",
+  },
+};
+
 function levelBadge(item: CaioEventItem): string | null {
   const payload = item.payload;
   if (!payload || typeof payload !== "object") return null;
@@ -485,6 +537,7 @@ export default function CaioPage() {
   const [critiquesError, setCritiquesError] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>("think_loop");
+  const [showHistory, setShowHistory] = useState<boolean>(false);
 
   const toggleExpanded = useCallback((eventId: string) => {
     setExpandedEvents((prev) => {
@@ -623,7 +676,11 @@ export default function CaioPage() {
   // attached as a synthetic field so the policy card can show the actual
   // proposal text; the consumed proposal is then dropped from the rendered
   // list so Pedro sees one card per decision instead of two side-by-side.
-  const items: (CaioEventItem & { _pairedProposal?: CaioEventItem })[] = [];
+  type DecoratedItem = CaioEventItem & {
+    _pairedProposal?: CaioEventItem;
+    _category?: EventCategory;
+  };
+  const items: DecoratedItem[] = [];
   const consumedProposalIds = new Set<string>();
   for (let i = 0; i < rawItems.length; i++) {
     const ev = rawItems[i];
@@ -653,13 +710,33 @@ export default function CaioPage() {
     }
   }
   // Filter out proposals that were merged into a policy_decision card.
-  const renderedItems = items.filter(
+  const preCategoryItems = items.filter(
     (it) =>
       !(
         it.event_type === "think_loop.proposal" &&
         consumedProposalIds.has(it.event_id)
       ),
   );
+
+  // Categorize each surviving item and split into buckets so the UI can
+  // surface "needs Pedro" cards on top and hide history behind a toggle.
+  const categorizedItems = preCategoryItems.map((it) => ({
+    ...it,
+    _category: categorize(it, it._pairedProposal),
+  }));
+  const pedroItems = categorizedItems.filter((it) => it._category === "pedro");
+  const blockedItems = categorizedItems.filter(
+    (it) => it._category === "blocked",
+  );
+  const historyItems = categorizedItems.filter(
+    (it) => it._category === "history",
+  );
+  const visibleItems = [
+    ...pedroItems,
+    ...blockedItems,
+    ...(showHistory ? historyItems : []),
+  ];
+  const renderedItems = visibleItems;
 
   const statusBanner =
     response && response.status !== "ok"
@@ -723,12 +800,31 @@ export default function CaioPage() {
           <div className="mb-4 flex items-start gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
             <Sparkles className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-slate-500" />
             <span>
-              <span className="font-semibold">mark_only:</span> aprovar/rejeitar
-              aqui registra só no Cockpit DB para você ter histórico das suas
-              decisões. <span className="font-semibold">Não dispara nada</span>{" "}
-              nos pipelines do Caio (#wa-aprovacoes, openclaw, events.sqlite).
-              Para ver o JSON cru de cada evento, use o botão "Ver detalhes".
+              <span className="font-semibold">Como ler:</span>{" "}
+              <span className="font-semibold text-emerald-700">🟢 verde</span>{" "}
+              = Caio aguarda você decidir.{" "}
+              <span className="font-semibold text-rose-700">🔴 vermelho</span>{" "}
+              = a política do Caio bloqueou (entenda o porquê).{" "}
+              <span className="font-semibold">📜 cinza</span> = histórico do
+              que Caio já fez/não-fez sozinho (escondido por padrão; aprovar/rejeitar
+              aqui só registra seu feedback retrospectivo, não muda nada).
             </span>
+          </div>
+
+          <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
+            <span>
+              🟢 <strong>{pedroItems.length}</strong> aguardando você ·
+              🔴 <strong>{blockedItems.length}</strong> bloqueado ·
+              📜 <strong>{historyItems.length}</strong> histórico
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-slate-200 text-xs text-slate-600 hover:bg-slate-50"
+              onClick={() => setShowHistory((v) => !v)}
+            >
+              {showHistory ? "Esconder histórico" : "Ver histórico"}
+            </Button>
           </div>
 
           {statusBanner ? (
@@ -767,10 +863,21 @@ export default function CaioPage() {
                 const pending = pendingDecisions.has(item.event_id);
                 const summary = renderSummary(item, item._pairedProposal);
                 const expanded = expandedEvents.has(item.event_id);
+                const category: EventCategory = item._category ?? "history";
+                const categoryMeta = CATEGORY_META[category];
+                const isHistory = category === "history";
                 return (
-                  <Card key={item.event_id}>
+                  <Card
+                    key={item.event_id}
+                    className={`${categoryMeta.ring} ${isHistory ? "opacity-80" : ""}`}
+                  >
                     <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
                       <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                        <span
+                          className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-semibold ${categoryMeta.tone}`}
+                        >
+                          {categoryMeta.label}
+                        </span>
                         <span
                           className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${badge.tone}`}
                         >
@@ -834,6 +941,24 @@ export default function CaioPage() {
                           </p>
                         </div>
                       ) : null}
+                      {category === "pedro" ? (
+                        <p className="mt-3 text-xs font-semibold text-emerald-700">
+                          Sua decisão aqui é registrada e usada pelo Reflexion
+                          semanal para ajustar a política do Caio.
+                        </p>
+                      ) : category === "blocked" ? (
+                        <p className="mt-3 text-xs font-semibold text-rose-700">
+                          Bloqueado pela política — Caio não executou nada.
+                          Sem decisão sua a tomar aqui (apenas ciência).
+                        </p>
+                      ) : (
+                        <p className="mt-3 text-xs text-slate-500">
+                          Caio já decidiu sozinho (auto-executou em modo
+                          shadow ou ignorou). Os botões abaixo são apenas
+                          marcador retrospectivo: dão sinal pro Reflexion
+                          (loop semanal) se você concorda com a decisão dele.
+                        </p>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -860,62 +985,68 @@ export default function CaioPage() {
                           )}
                         </pre>
                       ) : null}
-                      <div className="mt-3 flex items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant={
-                            decided?.decision === "approve"
-                              ? "primary"
-                              : "outline"
-                          }
-                          className={
-                            decided?.decision === "approve"
-                              ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                              : "border-emerald-200 text-emerald-800 hover:bg-emerald-50"
-                          }
-                          onClick={() => {
-                            void markDecision(item.event_id, "approve");
-                          }}
-                          disabled={pending}
-                        >
-                          <Check className="h-3.5 w-3.5" />
-                          {decided?.decision === "approve"
-                            ? "Aprovado"
-                            : "Aprovar"}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant={
-                            decided?.decision === "reject"
-                              ? "primary"
-                              : "outline"
-                          }
-                          className={
-                            decided?.decision === "reject"
-                              ? "bg-rose-600 text-white hover:bg-rose-700"
-                              : "border-rose-200 text-rose-800 hover:bg-rose-50"
-                          }
-                          onClick={() => {
-                            void markDecision(item.event_id, "reject");
-                          }}
-                          disabled={pending}
-                        >
-                          <XIcon className="h-3.5 w-3.5" />
-                          {decided?.decision === "reject"
-                            ? "Rejeitado"
-                            : "Rejeitar"}
-                        </Button>
-                        {pending ? (
-                          <span className="text-xs text-slate-500">
-                            salvando…
-                          </span>
-                        ) : decided ? (
-                          <span className="text-xs text-slate-500">
-                            em {formatOccurredAt(decided.decided_at)} ·
-                            mark_only
-                          </span>
-                        ) : null}
-                      </div>
+                      {category !== "blocked" ? (
+                        <div className="mt-3 flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant={
+                              decided?.decision === "approve"
+                                ? "primary"
+                                : "outline"
+                            }
+                            className={
+                              decided?.decision === "approve"
+                                ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                                : "border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                            }
+                            onClick={() => {
+                              void markDecision(item.event_id, "approve");
+                            }}
+                            disabled={pending}
+                          >
+                            <Check className="h-3.5 w-3.5" />
+                            {decided?.decision === "approve"
+                              ? "Aprovado"
+                              : category === "pedro"
+                                ? "Aprovar"
+                                : "Concordo"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={
+                              decided?.decision === "reject"
+                                ? "primary"
+                                : "outline"
+                            }
+                            className={
+                              decided?.decision === "reject"
+                                ? "bg-rose-600 text-white hover:bg-rose-700"
+                                : "border-rose-200 text-rose-800 hover:bg-rose-50"
+                            }
+                            onClick={() => {
+                              void markDecision(item.event_id, "reject");
+                            }}
+                            disabled={pending}
+                          >
+                            <XIcon className="h-3.5 w-3.5" />
+                            {decided?.decision === "reject"
+                              ? "Rejeitado"
+                              : category === "pedro"
+                                ? "Rejeitar"
+                                : "Discordo"}
+                          </Button>
+                          {pending ? (
+                            <span className="text-xs text-slate-500">
+                              salvando…
+                            </span>
+                          ) : decided ? (
+                            <span className="text-xs text-slate-500">
+                              em {formatOccurredAt(decided.decided_at)} ·
+                              mark_only
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </CardContent>
                   </Card>
                 );
