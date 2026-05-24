@@ -79,6 +79,38 @@ type StatusBucket =
   | "rejected"
   | "history";
 
+type CaioWaContactStats = {
+  jid: string;
+  contact_name: string | null;
+  total: number;
+  approved: number;
+  replaced: number;
+  manual_override: number;
+  rejected: number;
+  blocked: number;
+  engaged: number;
+  engagement_rate: number | null;
+  avg_approval_time_s: number | null;
+  last_interaction_at: string | null;
+};
+
+type CaioWaWindow = {
+  days: number;
+  min_interactions: number;
+  total_interactions: number;
+  engaged_interactions: number;
+  engagement_rate: number | null;
+  distinct_contacts: number;
+};
+
+type CaioWaApprovalsResponse = {
+  status: CaioBridgeStatus;
+  error_class: string | null;
+  latency_ms: number;
+  window: CaioWaWindow | null;
+  contacts: CaioWaContactStats[];
+};
+
 type CaioCritiqueItem = {
   id: number;
   generated_at: string;
@@ -108,7 +140,7 @@ type CaioRecentCritiquesResponse = {
   window: CaioCritiquesWindow;
 };
 
-type ActiveTab = "think_loop" | "reflexion";
+type ActiveTab = "think_loop" | "reflexion" | "whatsapp";
 
 const EVENT_TYPE_BADGES: Record<string, { label: string; tone: string }> = {
   "think_loop.proposal": {
@@ -548,6 +580,12 @@ export default function CaioPage() {
   const [critiquesLoading, setCritiquesLoading] = useState<boolean>(false);
   const [critiquesError, setCritiquesError] = useState<string | null>(null);
 
+  const [waResponse, setWaResponse] =
+    useState<CaioWaApprovalsResponse | null>(null);
+  const [waLoading, setWaLoading] = useState<boolean>(false);
+  const [waError, setWaError] = useState<string | null>(null);
+  const [waDays, setWaDays] = useState<number>(7);
+
   const [activeTab, setActiveTab] = useState<ActiveTab>("think_loop");
   const [activeBucket, setActiveBucket] = useState<StatusBucket>("pending");
 
@@ -584,6 +622,31 @@ export default function CaioPage() {
       setLoading(false);
     }
   }, []);
+
+  const loadWa = useCallback(
+    async (days: number) => {
+      setWaLoading(true);
+      setWaError(null);
+      try {
+        const result = await customFetch<{ data: CaioWaApprovalsResponse }>(
+          `/api/v1/caio/wa/recent-approvals?days=${days}&min_interactions=1&limit=100`,
+          { method: "GET" },
+        );
+        setWaResponse(result.data);
+      } catch (err) {
+        const msg =
+          err instanceof ApiError
+            ? `${err.status}: ${err.message}`
+            : err instanceof Error
+              ? err.message
+              : "Failed to load WhatsApp stats";
+        setWaError(msg);
+      } finally {
+        setWaLoading(false);
+      }
+    },
+    [],
+  );
 
   const loadCritiques = useCallback(async () => {
     setCritiquesLoading(true);
@@ -682,6 +745,13 @@ export default function CaioPage() {
       void loadCritiques();
     }
   }, [activeTab, critiquesResponse, loadCritiques]);
+
+  // Same lazy-load story for the WhatsApp engagement tab.
+  useEffect(() => {
+    if (activeTab === "whatsapp" && waResponse === null) {
+      void loadWa(waDays);
+    }
+  }, [activeTab, waResponse, waDays, loadWa]);
 
   const rawItems = response?.items ?? [];
 
@@ -811,9 +881,17 @@ export default function CaioPage() {
         )
       : null;
 
-  const isReflexion = activeTab === "reflexion";
-  const onReload = isReflexion ? loadCritiques : load;
-  const reloadDisabled = isReflexion ? critiquesLoading : loading;
+  const onReload = (() => {
+    if (activeTab === "reflexion") return loadCritiques;
+    if (activeTab === "whatsapp") return () => loadWa(waDays);
+    return load;
+  })();
+  const reloadDisabled =
+    activeTab === "reflexion"
+      ? critiquesLoading
+      : activeTab === "whatsapp"
+        ? waLoading
+        : loading;
 
   return (
     <DashboardPageLayout
@@ -852,6 +930,7 @@ export default function CaioPage() {
         <TabsList>
           <TabsTrigger value="think_loop">Think Loop</TabsTrigger>
           <TabsTrigger value="reflexion">Reflexion</TabsTrigger>
+          <TabsTrigger value="whatsapp">WhatsApp</TabsTrigger>
         </TabsList>
 
         <TabsContent value="think_loop">
@@ -1271,6 +1350,158 @@ export default function CaioPage() {
                         <Sparkles className="mr-1 inline h-3 w-3" />
                         approval_log #{c.approval_log_id}
                       </p>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="whatsapp">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            {([3, 7, 30, 90] as const).map((d) => (
+              <Button
+                key={d}
+                size="sm"
+                variant={waDays === d ? "primary" : "outline"}
+                className={
+                  waDays === d
+                    ? "bg-indigo-600 text-white hover:bg-indigo-700"
+                    : "border-slate-200 text-xs text-slate-600 hover:bg-slate-50"
+                }
+                onClick={() => {
+                  setWaDays(d);
+                  void loadWa(d);
+                }}
+              >
+                Últimos {d}d
+              </Button>
+            ))}
+          </div>
+
+          {waResponse?.window ? (
+            <Card className="mb-3 bg-indigo-50">
+              <CardContent className="py-3 text-sm">
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+                  <span>
+                    <strong>{waResponse.window.distinct_contacts}</strong>{" "}
+                    contatos
+                  </span>
+                  <span>
+                    <strong>{waResponse.window.total_interactions}</strong>{" "}
+                    interações
+                  </span>
+                  <span>
+                    <strong>{waResponse.window.engaged_interactions}</strong>{" "}
+                    engajadas
+                  </span>
+                  <span className="font-semibold text-indigo-800">
+                    Engagement{" "}
+                    {waResponse.window.engagement_rate !== null
+                      ? `${Math.round(waResponse.window.engagement_rate * 100)}%`
+                      : "—"}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  Engajada = aprovada, substituída ou manual_override.
+                  Não-engajada = rejeitada ou bloqueada.
+                </p>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {waResponse && waResponse.status !== "ok" ? (
+            <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <span>
+                {statusMessage(
+                  waResponse.status,
+                  waResponse.error_class,
+                  "WhatsApp",
+                )}
+              </span>
+            </div>
+          ) : null}
+
+          {waError ? (
+            <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              {waError}
+            </div>
+          ) : null}
+
+          {waLoading && !waResponse ? (
+            <p className="text-sm text-slate-500">Carregando WhatsApp…</p>
+          ) : (waResponse?.contacts ?? []).length === 0 ? (
+            <Card>
+              <CardContent className="py-6 text-sm text-slate-500">
+                Nenhuma interação WhatsApp na janela. Tente uma janela maior.
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-3">
+              {(waResponse?.contacts ?? []).map((c) => {
+                const rate = c.engagement_rate ?? 0;
+                const ratePct = Math.round(rate * 100);
+                const rateTone =
+                  rate >= 0.8
+                    ? "bg-emerald-100 text-emerald-800"
+                    : rate >= 0.5
+                      ? "bg-amber-100 text-amber-800"
+                      : "bg-rose-100 text-rose-800";
+                return (
+                  <Card key={c.jid}>
+                    <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
+                      <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                        <span className="text-slate-800">
+                          {c.contact_name || formatJid(c.jid)}
+                        </span>
+                        {c.contact_name ? (
+                          <span className="text-xs font-normal text-slate-500">
+                            {formatJid(c.jid)}
+                          </span>
+                        ) : null}
+                        <span
+                          className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-semibold ${rateTone}`}
+                        >
+                          {c.engagement_rate !== null ? `${ratePct}%` : "—"}
+                        </span>
+                      </div>
+                      <span className="text-xs text-slate-500">
+                        {c.last_interaction_at
+                          ? formatOccurredAt(c.last_interaction_at)
+                          : ""}
+                      </span>
+                    </CardHeader>
+                    <CardContent className="pt-2 text-sm text-slate-700">
+                      <div className="grid grid-cols-3 gap-2 text-xs sm:grid-cols-6">
+                        <span className="rounded bg-slate-100 px-2 py-1">
+                          total <strong>{c.total}</strong>
+                        </span>
+                        <span className="rounded bg-emerald-100 px-2 py-1 text-emerald-800">
+                          aprovadas <strong>{c.approved}</strong>
+                        </span>
+                        <span className="rounded bg-amber-100 px-2 py-1 text-amber-800">
+                          substituídas <strong>{c.replaced}</strong>
+                        </span>
+                        <span className="rounded bg-sky-100 px-2 py-1 text-sky-800">
+                          override <strong>{c.manual_override}</strong>
+                        </span>
+                        <span className="rounded bg-rose-100 px-2 py-1 text-rose-800">
+                          rejeitadas <strong>{c.rejected}</strong>
+                        </span>
+                        <span className="rounded bg-slate-200 px-2 py-1 text-slate-700">
+                          bloqueadas <strong>{c.blocked}</strong>
+                        </span>
+                      </div>
+                      {c.avg_approval_time_s !== null ? (
+                        <p className="mt-2 text-xs text-slate-500">
+                          Tempo médio de aprovação:{" "}
+                          {c.avg_approval_time_s < 60
+                            ? `${c.avg_approval_time_s.toFixed(1)}s`
+                            : `${(c.avg_approval_time_s / 60).toFixed(1)}min`}
+                        </p>
+                      ) : null}
                     </CardContent>
                   </Card>
                 );

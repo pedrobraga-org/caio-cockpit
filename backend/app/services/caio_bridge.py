@@ -42,6 +42,17 @@ from typing import Any, Awaitable, Callable, Literal
 
 from app.core.logging import get_logger
 
+try:
+    # psycopg is an optional driver — only the WebhookPostgresReader needs it.
+    # Importing here (instead of inside the reader) lets ``safe_read`` widen
+    # its except-clause to include psycopg errors without each reader doing
+    # the dance. If psycopg isn't installed we fall back to a sentinel that
+    # ``except`` will simply never match.
+    from psycopg import Error as _PsycopgError  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - dev environments only
+    class _PsycopgError(Exception):  # type: ignore[no-redef]
+        """Sentinel: psycopg is not installed in this environment."""
+
 logger = get_logger(__name__)
 
 BridgeStatus = Literal["ok", "error", "disabled", "circuit_open", "timeout"]
@@ -125,7 +136,7 @@ class BridgeBase:
                 error_class="TimeoutError",
                 latency_ms=int((time.perf_counter() - started) * 1000),
             )
-        except (sqlite3.Error, OSError) as exc:
+        except (sqlite3.Error, OSError, _PsycopgError) as exc:
             self._record_failure()
             logger.warning(
                 "caio_bridge.read_error bridge=%s error_class=%s",
@@ -376,6 +387,170 @@ class CritiquesSqliteReader(BridgeBase):
         async def _q() -> list[dict[str, Any]]:
             return await asyncio.to_thread(
                 self._sync_recent_critiques, bounded_limit, since_iso
+            )
+
+        return await self.safe_read(_q)
+
+
+class WebhookPostgresReader(BridgeBase):
+    """Reads WhatsApp approval log from the V3 webhook Postgres (read-only).
+
+    The webhook V3 pipeline writes every approval card outcome (approved /
+    replaced / rejected / manual_override / blocked) to ``caio_approval_log``
+    in the ``caio`` database on the Evolution Postgres instance. The Cockpit
+    surfaces this so Pedro can see engagement (how often he sends Caio's
+    suggestion verbatim vs rewrites it vs blocks it) per contact.
+
+    Resilience guarantees mirror the SQLite readers:
+    - DSN must use the ``cockpit_ro`` role (SELECT on ``caio_approval_log``,
+      nothing else). The bridge **never** issues writes; the upstream pipeline
+      is the only writer.
+    - Hard wall-clock timeout via ``BridgeBase.safe_read``. ``psycopg.Error``
+      and ``OSError`` trip the per-bridge circuit breaker. Callers always
+      receive a ``BridgeResult``.
+
+    The ``approved + replaced + manual_override`` set are the "engaged"
+    actions (Pedro acted on the contact, even if he reworded). ``rejected``
+    and ``blocked`` are non-engagements. The engagement_rate computed below
+    is the fraction of total interactions that landed in the engaged set.
+    """
+
+    name = "webhook_postgres"
+    default_timeout_s: float = 3.0
+
+    # Caio writes one of these labels per approval card outcome.
+    _ENGAGED_ACTIONS: tuple[str, ...] = ("approved", "replaced", "manual_override")
+    _NON_ENGAGED_ACTIONS: tuple[str, ...] = ("rejected", "blocked")
+
+    def __init__(
+        self,
+        *,
+        dsn: str,
+        enabled: bool,
+        timeout_s: float | None = None,
+    ) -> None:
+        super().__init__(enabled=enabled, timeout_s=timeout_s)
+        self._dsn = dsn
+
+    @property
+    def dsn(self) -> str:
+        return self._dsn
+
+    def _sync_recent_stats(
+        self,
+        days: int,
+        min_interactions: int,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Per-contact engagement stats. Pure SELECTs, no writes."""
+        # Lazy import so the rest of the app doesn't pay the cost when the
+        # bridge is disabled (or psycopg is unavailable for some reason).
+        import psycopg  # type: ignore[import-not-found]
+
+        query = """
+            WITH window_rows AS (
+                SELECT jid, contact_name, action, approval_time_secs, created_at
+                FROM caio_approval_log
+                WHERE created_at >= now() - %s::interval
+            )
+            SELECT
+                jid,
+                MAX(contact_name) AS contact_name,
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE action = 'approved') AS approved,
+                COUNT(*) FILTER (WHERE action = 'replaced') AS replaced,
+                COUNT(*) FILTER (WHERE action = 'manual_override') AS manual_override,
+                COUNT(*) FILTER (WHERE action = 'rejected') AS rejected,
+                COUNT(*) FILTER (WHERE action = 'blocked') AS blocked,
+                AVG(approval_time_secs) FILTER (WHERE approval_time_secs IS NOT NULL)
+                    AS avg_approval_time_s,
+                MAX(created_at) AS last_interaction_at
+            FROM window_rows
+            GROUP BY jid
+            HAVING COUNT(*) >= %s
+            ORDER BY MAX(created_at) DESC
+            LIMIT %s
+        """
+        interval = f"{int(days)} days"
+        with psycopg.connect(
+            self._dsn,
+            connect_timeout=int(self.timeout_s),
+            # psycopg 3 honors statement_timeout via options=.
+            options=f"-c statement_timeout={int(self.timeout_s * 1000)}",
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    query,
+                    (interval, int(min_interactions), int(limit)),
+                )
+                rows = cur.fetchall()
+                cols = [c.name for c in (cur.description or [])]
+                # Roll-up across all surfaced contacts (not the whole table —
+                # respects min_interactions filter so noise rows don't skew).
+                cur.execute(
+                    "SELECT COUNT(*) AS total, "
+                    "COUNT(*) FILTER (WHERE action IN ('approved','replaced','manual_override')) AS engaged, "
+                    "COUNT(DISTINCT jid) AS contacts "
+                    "FROM caio_approval_log "
+                    "WHERE created_at >= now() - %s::interval",
+                    (interval,),
+                )
+                roll = cur.fetchone()
+        contacts: list[dict[str, Any]] = []
+        for raw in rows:
+            item = dict(zip(cols, raw))
+            total = int(item.get("total") or 0)
+            engaged = (
+                int(item.get("approved") or 0)
+                + int(item.get("replaced") or 0)
+                + int(item.get("manual_override") or 0)
+            )
+            item["engaged"] = engaged
+            item["engagement_rate"] = (engaged / total) if total else None
+            item["avg_approval_time_s"] = (
+                float(item["avg_approval_time_s"])
+                if item.get("avg_approval_time_s") is not None
+                else None
+            )
+            if item.get("last_interaction_at") is not None:
+                item["last_interaction_at"] = item["last_interaction_at"].isoformat()
+            contacts.append(item)
+
+        window_total = int((roll or (0,))[0]) if roll else 0
+        window_engaged = int((roll or (0, 0))[1]) if roll else 0
+        window_contacts = int((roll or (0, 0, 0))[2]) if roll else 0
+        return {
+            "window": {
+                "days": int(days),
+                "min_interactions": int(min_interactions),
+                "total_interactions": window_total,
+                "engaged_interactions": window_engaged,
+                "engagement_rate": (
+                    window_engaged / window_total if window_total else None
+                ),
+                "distinct_contacts": window_contacts,
+            },
+            "contacts": contacts,
+        }
+
+    async def recent_approvals(
+        self,
+        *,
+        days: int = 7,
+        min_interactions: int = 1,
+        limit: int = 50,
+    ) -> BridgeResult:
+        """Return per-contact engagement stats over the last ``days`` days."""
+        bounded_limit = max(1, min(int(limit), 500))
+        bounded_days = max(1, min(int(days), 365))
+        bounded_min = max(1, min(int(min_interactions), 1000))
+
+        async def _q() -> dict[str, Any]:
+            return await asyncio.to_thread(
+                self._sync_recent_stats,
+                bounded_days,
+                bounded_min,
+                bounded_limit,
             )
 
         return await self.safe_read(_q)

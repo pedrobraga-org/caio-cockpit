@@ -32,8 +32,15 @@ from app.schemas.caio import (
     CaioEventItem,
     CaioRecentCritiquesResponse,
     CaioRecentEventsResponse,
+    CaioWaApprovalsResponse,
+    CaioWaContactStats,
+    CaioWaWindow,
 )
-from app.services.caio_bridge import CritiquesSqliteReader, EventsSqliteReader
+from app.services.caio_bridge import (
+    CritiquesSqliteReader,
+    EventsSqliteReader,
+    WebhookPostgresReader,
+)
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/caio", tags=["caio"])
@@ -75,6 +82,21 @@ def _critiques_reader() -> CritiquesSqliteReader:
 
 SINCE_DAYS_QUERY = Query(default=30, ge=1, le=365)
 CRITIQUES_LIMIT_QUERY = Query(default=50, ge=1, le=500)
+
+WA_DAYS_QUERY = Query(default=7, ge=1, le=365)
+WA_MIN_INTERACTIONS_QUERY = Query(default=1, ge=1, le=1000)
+WA_LIMIT_QUERY = Query(default=50, ge=1, le=500)
+
+
+@lru_cache(maxsize=1)
+def _wa_reader() -> WebhookPostgresReader:
+    dsn = settings.webhook_database_url.strip()
+    enabled = settings.caio_bridge_wa_enabled and bool(dsn)
+    return WebhookPostgresReader(
+        dsn=dsn,
+        enabled=enabled,
+        timeout_s=settings.caio_bridge_wa_timeout_s,
+    )
 
 
 async def _load_decisions(
@@ -383,6 +405,50 @@ async def complete_think_loop_decision(
         note=existing.note,
         started_at=existing.started_at,
         completed_at=existing.completed_at,
+    )
+
+
+@router.get(
+    "/wa/recent-approvals",
+    response_model=CaioWaApprovalsResponse,
+    summary="Per-contact engagement stats from the WhatsApp approval log",
+    description=(
+        "Returns engagement per contact (approved / replaced / manual_override "
+        "vs rejected / blocked) over the last ``days`` days. The numbers come "
+        "from ``caio_approval_log`` in the WhatsApp pipeline V3 Postgres via a "
+        "SELECT-only ``cockpit_ro`` role. Read-only and append-safe: the "
+        "Cockpit never writes here. The ``window`` block carries a roll-up "
+        "over all interactions in the period so totals make sense even when "
+        "``min_interactions`` filters out noisy contacts from ``contacts``."
+    ),
+)
+async def wa_recent_approvals(
+    days: int = WA_DAYS_QUERY,
+    min_interactions: int = WA_MIN_INTERACTIONS_QUERY,
+    limit: int = WA_LIMIT_QUERY,
+    _auth: AuthContext = AUTH_CONTEXT_DEP,
+) -> CaioWaApprovalsResponse:
+    reader = _wa_reader()
+    result = await reader.recent_approvals(
+        days=days, min_interactions=min_interactions, limit=limit
+    )
+    if result.status != "ok" or not result.data:
+        return CaioWaApprovalsResponse(
+            status=result.status,
+            error_class=result.error_class,
+            latency_ms=result.latency_ms,
+            window=None,
+            contacts=[],
+        )
+    payload = result.data
+    window = CaioWaWindow(**payload["window"])
+    contacts = [CaioWaContactStats(**row) for row in payload["contacts"]]
+    return CaioWaApprovalsResponse(
+        status=result.status,
+        error_class=result.error_class,
+        latency_ms=result.latency_ms,
+        window=window,
+        contacts=contacts,
     )
 
 

@@ -51,6 +51,10 @@ services:
       CAIO_STATE_DIR: ${CAIO_STATE_DIR:-/data/caio-state}
       CAIO_BRIDGE_EVENTS_ENABLED: ${CAIO_BRIDGE_EVENTS_ENABLED:-true}
       CAIO_BRIDGE_CRITIQUES_ENABLED: ${CAIO_BRIDGE_CRITIQUES_ENABLED:-true}
+      # WhatsApp pipeline V3 Postgres bridge (cockpit_ro SELECT-only role).
+      # Reaches the Evolution Postgres via host.docker.internal:5433.
+      WEBHOOK_DATABASE_URL: ${WEBHOOK_DATABASE_URL:-}
+      CAIO_BRIDGE_WA_ENABLED: ${CAIO_BRIDGE_WA_ENABLED:-true}
     volumes:
       # Read-only bind: Caio's append-only event log and reflexion critiques.
       # Empty default uses /dev/null so the bridge cleanly reports "error" when

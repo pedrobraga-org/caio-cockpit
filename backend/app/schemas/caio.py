@@ -141,3 +141,46 @@ class CaioRecentCritiquesResponse(BaseModel):
     latency_ms: int = 0
     items: list[CaioCritiqueItem] = Field(default_factory=list)
     window: CaioCritiquesWindow
+
+
+class CaioWaContactStats(BaseModel):
+    """Per-contact engagement stats from ``caio_approval_log``."""
+
+    jid: str
+    contact_name: str | None = None
+    total: int
+    approved: int
+    replaced: int
+    manual_override: int
+    rejected: int
+    blocked: int
+    engaged: int = Field(
+        description="approved + replaced + manual_override — Pedro acted on it."
+    )
+    engagement_rate: float | None = Field(
+        default=None,
+        description="engaged / total. ``None`` if total is zero (filtered out).",
+    )
+    avg_approval_time_s: float | None = None
+    last_interaction_at: str | None = None
+
+
+class CaioWaWindow(BaseModel):
+    """Roll-up over the queried window (not just the surfaced contacts)."""
+
+    days: int
+    min_interactions: int
+    total_interactions: int
+    engaged_interactions: int
+    engagement_rate: float | None = None
+    distinct_contacts: int
+
+
+class CaioWaApprovalsResponse(BaseModel):
+    """Response envelope for /api/v1/caio/wa/recent-approvals."""
+
+    status: CaioBridgeStatus
+    error_class: str | None = None
+    latency_ms: int = 0
+    window: CaioWaWindow | None = None
+    contacts: list[CaioWaContactStats] = Field(default_factory=list)

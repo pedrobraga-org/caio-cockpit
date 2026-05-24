@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     caio_bridge_critiques_enabled: bool = True
     caio_bridge_timeout_s: float = 2.0
 
+    # WhatsApp pipeline V3 Postgres bridge (read-only). The DSN must point at
+    # a SELECT-only role (``cockpit_ro``); see docs/cockpit_ro.sql for the
+    # bootstrap script. Empty string disables the bridge and the /wa/*
+    # endpoints degrade to ``status=disabled``.
+    webhook_database_url: str = ""
+    caio_bridge_wa_enabled: bool = True
+    caio_bridge_wa_timeout_s: float = 3.0
+
     # V1.1 Cockpit approve/reject mode. Hard-locked to "mark_only": writing a
     # decision only updates the Cockpit DB and NEVER dispatches downstream into
     # Caio's pipelines (#wa-aprovacoes, OpenClaw gateway, events.sqlite, etc).
