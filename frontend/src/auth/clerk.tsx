@@ -17,6 +17,7 @@ import {
 
 import { isLikelyValidClerkPublishableKey } from "@/auth/clerkKey";
 import { getLocalAuthToken, isLocalAuthMode } from "@/auth/localAuth";
+import { isCfAccessMode } from "@/auth/mode";
 
 function hasLocalAuthToken(): boolean {
   return Boolean(getLocalAuthToken());
@@ -25,6 +26,7 @@ function hasLocalAuthToken(): boolean {
 export function isClerkEnabled(): boolean {
   // IMPORTANT: keep this in sync with AuthProvider; otherwise components like
   // <SignedOut/> may render without a <ClerkProvider/> and crash during prerender.
+  if (isCfAccessMode()) return false;
   if (isLocalAuthMode()) return false;
   return isLikelyValidClerkPublishableKey(
     process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
@@ -32,6 +34,9 @@ export function isClerkEnabled(): boolean {
 }
 
 export function SignedIn(props: { children: ReactNode }) {
+  // In cf_access mode, reaching the SPA at all means CF Access has already
+  // authenticated the user at the edge — treat as signed in.
+  if (isCfAccessMode()) return <>{props.children}</>;
   if (isLocalAuthMode()) {
     return hasLocalAuthToken() ? <>{props.children}</> : null;
   }
@@ -40,6 +45,7 @@ export function SignedIn(props: { children: ReactNode }) {
 }
 
 export function SignedOut(props: { children: ReactNode }) {
+  if (isCfAccessMode()) return null;
   if (isLocalAuthMode()) {
     return hasLocalAuthToken() ? null : <>{props.children}</>;
   }
@@ -61,6 +67,9 @@ export function SignOutButton(
 }
 
 export function useUser() {
+  if (isCfAccessMode()) {
+    return { isLoaded: true, isSignedIn: true, user: null } as const;
+  }
   if (isLocalAuthMode()) {
     return {
       isLoaded: true,
@@ -75,6 +84,15 @@ export function useUser() {
 }
 
 export function useAuth() {
+  if (isCfAccessMode()) {
+    return {
+      isLoaded: true,
+      isSignedIn: true,
+      userId: "cf-access-user",
+      sessionId: "cf-access-session",
+      getToken: async () => null,
+    } as const;
+  }
   if (isLocalAuthMode()) {
     const token = getLocalAuthToken();
     return {
