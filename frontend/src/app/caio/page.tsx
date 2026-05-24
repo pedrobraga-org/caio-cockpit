@@ -797,18 +797,37 @@ export default function CaioPage() {
         </TabsList>
 
         <TabsContent value="think_loop">
-          <div className="mb-4 flex items-start gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
-            <Sparkles className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-slate-500" />
-            <span>
-              <span className="font-semibold">Como ler:</span>{" "}
-              <span className="font-semibold text-emerald-700">🟢 verde</span>{" "}
-              = Caio aguarda você decidir.{" "}
-              <span className="font-semibold text-rose-700">🔴 vermelho</span>{" "}
-              = a política do Caio bloqueou (entenda o porquê).{" "}
-              <span className="font-semibold">📜 cinza</span> = histórico do
-              que Caio já fez/não-fez sozinho (escondido por padrão; aprovar/rejeitar
-              aqui só registra seu feedback retrospectivo, não muda nada).
-            </span>
+          <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+            <p className="mb-2 flex items-center gap-1.5 font-semibold text-slate-800">
+              <Sparkles className="h-3.5 w-3.5 text-slate-500" />
+              Como ler os cards
+            </p>
+            <ul className="space-y-1.5">
+              <li className="flex items-start gap-2">
+                <span className="mt-0.5 inline-flex flex-shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-800">
+                  🟢 verde
+                </span>
+                <span>Caio aguarda você decidir — sua resposta importa.</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-0.5 inline-flex flex-shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-rose-100 text-rose-800">
+                  🔴 vermelho
+                </span>
+                <span>
+                  A política do Caio bloqueou — só ciência, sem botão.
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-0.5 inline-flex flex-shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-slate-100 text-slate-600">
+                  📜 cinza
+                </span>
+                <span>
+                  Histórico do que Caio já fez sozinho (escondido por
+                  padrão). Concordo/Discordo aqui só vira feedback
+                  retrospectivo, não muda nada agora.
+                </span>
+              </li>
+            </ul>
           </div>
 
           <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
@@ -959,14 +978,6 @@ export default function CaioPage() {
                           (loop semanal) se você concorda com a decisão dele.
                         </p>
                       )}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="mt-2 border-slate-200 text-xs text-slate-600 hover:bg-slate-50"
-                        onClick={() => toggleExpanded(item.event_id)}
-                      >
-                        {expanded ? "Esconder detalhes" : "Ver detalhes (JSON)"}
-                      </Button>
                       {expanded ? (
                         <pre className="mt-2 overflow-x-auto rounded-md border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-700">
                           {JSON.stringify(
@@ -985,68 +996,78 @@ export default function CaioPage() {
                           )}
                         </pre>
                       ) : null}
-                      {category !== "blocked" ? (
-                        <div className="mt-3 flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            variant={
-                              decided?.decision === "approve"
-                                ? "primary"
-                                : "outline"
-                            }
-                            className={
-                              decided?.decision === "approve"
-                                ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                                : "border-emerald-200 text-emerald-800 hover:bg-emerald-50"
-                            }
-                            onClick={() => {
-                              void markDecision(item.event_id, "approve");
-                            }}
-                            disabled={pending}
-                          >
-                            <Check className="h-3.5 w-3.5" />
-                            {decided?.decision === "approve"
-                              ? "Aprovado"
-                              : category === "pedro"
-                                ? "Aprovar"
-                                : "Concordo"}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant={
-                              decided?.decision === "reject"
-                                ? "primary"
-                                : "outline"
-                            }
-                            className={
-                              decided?.decision === "reject"
-                                ? "bg-rose-600 text-white hover:bg-rose-700"
-                                : "border-rose-200 text-rose-800 hover:bg-rose-50"
-                            }
-                            onClick={() => {
-                              void markDecision(item.event_id, "reject");
-                            }}
-                            disabled={pending}
-                          >
-                            <XIcon className="h-3.5 w-3.5" />
-                            {decided?.decision === "reject"
-                              ? "Rejeitado"
-                              : category === "pedro"
-                                ? "Rejeitar"
-                                : "Discordo"}
-                          </Button>
-                          {pending ? (
-                            <span className="text-xs text-slate-500">
-                              salvando…
-                            </span>
-                          ) : decided ? (
-                            <span className="text-xs text-slate-500">
-                              em {formatOccurredAt(decided.decided_at)} ·
-                              mark_only
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : null}
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        {category !== "blocked" ? (
+                          <>
+                            <Button
+                              size="sm"
+                              variant={
+                                decided?.decision === "approve"
+                                  ? "primary"
+                                  : "outline"
+                              }
+                              className={
+                                decided?.decision === "approve"
+                                  ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                                  : "border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                              }
+                              onClick={() => {
+                                void markDecision(item.event_id, "approve");
+                              }}
+                              disabled={pending}
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                              {decided?.decision === "approve"
+                                ? "Aprovado"
+                                : category === "pedro"
+                                  ? "Aprovar"
+                                  : "Concordo"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant={
+                                decided?.decision === "reject"
+                                  ? "primary"
+                                  : "outline"
+                              }
+                              className={
+                                decided?.decision === "reject"
+                                  ? "bg-rose-600 text-white hover:bg-rose-700"
+                                  : "border-rose-200 text-rose-800 hover:bg-rose-50"
+                              }
+                              onClick={() => {
+                                void markDecision(item.event_id, "reject");
+                              }}
+                              disabled={pending}
+                            >
+                              <XIcon className="h-3.5 w-3.5" />
+                              {decided?.decision === "reject"
+                                ? "Rejeitado"
+                                : category === "pedro"
+                                  ? "Rejeitar"
+                                  : "Discordo"}
+                            </Button>
+                          </>
+                        ) : null}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-slate-200 text-xs text-slate-600 hover:bg-slate-50"
+                          onClick={() => toggleExpanded(item.event_id)}
+                        >
+                          {expanded ? "Esconder detalhes" : "Ver detalhes (JSON)"}
+                        </Button>
+                        {pending ? (
+                          <span className="text-xs text-slate-500">
+                            salvando…
+                          </span>
+                        ) : decided ? (
+                          <span className="text-xs text-slate-500">
+                            em {formatOccurredAt(decided.decided_at)} ·
+                            mark_only
+                          </span>
+                        ) : null}
+                      </div>
                     </CardContent>
                   </Card>
                 );
