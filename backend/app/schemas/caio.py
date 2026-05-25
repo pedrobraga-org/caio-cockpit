@@ -24,6 +24,10 @@ class CaioEventDecisionRead(BaseModel):
     # routes cards across To Do / In Progress / Done from these timestamps.
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # Discord posting metadata (Fase A: #caio-aprovacoes). Both NULL when the
+    # decision was made directly in the Cockpit UI.
+    discord_message_id: str | None = None
+    discord_channel_id: str | None = None
 
 
 class CaioEventItem(BaseModel):
@@ -67,6 +71,16 @@ class CaioDecisionRequest(BaseModel):
     event_id: str = Field(min_length=1, max_length=255)
     decision: CaioDecisionKind
     note: str | None = Field(default=None, max_length=2000)
+    # Discord-originated decision metadata (Fase A). When the request comes via
+    # the worker-token path, these are REQUIRED and the message_id must look
+    # like a Discord snowflake (17-20 digits). The backend enforces this in
+    # the endpoint handler.
+    discord_message_id: str | None = Field(
+        default=None, max_length=64, pattern=r"^\d{17,20}$"
+    )
+    discord_channel_id: str | None = Field(
+        default=None, max_length=64, pattern=r"^\d{17,20}$"
+    )
 
 
 class CaioDecisionResponse(BaseModel):
@@ -79,6 +93,8 @@ class CaioDecisionResponse(BaseModel):
     note: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    discord_message_id: str | None = None
+    discord_channel_id: str | None = None
     # Sanity flag for the UI: confirms the server is in mark_only mode and
     # nothing downstream was dispatched.
     mode: Literal["mark_only"] = "mark_only"

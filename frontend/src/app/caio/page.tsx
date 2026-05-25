@@ -39,6 +39,8 @@ type CaioEventDecisionRead = {
   note: string | null;
   started_at: string | null;
   completed_at: string | null;
+  discord_message_id: string | null;
+  discord_channel_id: string | null;
 };
 
 type CaioEventItem = {
@@ -68,6 +70,8 @@ type CaioDecisionResponse = {
   note: string | null;
   started_at: string | null;
   completed_at: string | null;
+  discord_message_id: string | null;
+  discord_channel_id: string | null;
   mode: "mark_only";
 };
 
@@ -704,6 +708,8 @@ export default function CaioPage() {
                           note: fresh.note,
                           started_at: fresh.started_at,
                           completed_at: fresh.completed_at,
+                          discord_message_id: fresh.discord_message_id,
+                          discord_channel_id: fresh.discord_channel_id,
                         },
                       }
                     : item,
@@ -1161,7 +1167,54 @@ export default function CaioPage() {
                         </pre>
                       ) : null}
                       <div className="mt-3 flex flex-wrap items-center gap-2">
-                        {category !== "blocked" ? (
+                        {decided?.discord_message_id ? (
+                          // Fase A: decision was recorded by reacting in
+                          // Discord #caio-aprovacoes. The Cockpit becomes a
+                          // viewer — show a deep link instead of buttons.
+                          (() => {
+                            const guildId =
+                              process.env.NEXT_PUBLIC_DISCORD_GUILD_ID ?? "@me";
+                            const url =
+                              decided.discord_channel_id && decided.discord_message_id
+                                ? `https://discord.com/channels/${guildId}/${decided.discord_channel_id}/${decided.discord_message_id}`
+                                : null;
+                            const label =
+                              decided.decision === "approve"
+                                ? "Aprovado no Discord"
+                                : "Rejeitado no Discord";
+                            const tone =
+                              decided.decision === "approve"
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                                : "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100";
+                            const content = (
+                              <>
+                                {decided.decision === "approve" ? (
+                                  <Check className="h-3.5 w-3.5" />
+                                ) : (
+                                  <XIcon className="h-3.5 w-3.5" />
+                                )}
+                                {label}
+                                <span className="ml-1 text-xs opacity-70">↗</span>
+                              </>
+                            );
+                            return url ? (
+                              <a
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${tone}`}
+                              >
+                                {content}
+                              </a>
+                            ) : (
+                              <span
+                                className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium ${tone}`}
+                              >
+                                {content}
+                              </span>
+                            );
+                          })()
+                        ) : category !== "blocked" ? (
                           <>
                             <Button
                               size="sm"

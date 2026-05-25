@@ -44,3 +44,10 @@ class CaioEventDecision(QueryModel, table=True):
     # not touched yet (the "To Do" bucket in the UI).
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # Discord posting metadata: set when the decision was recorded as a reaction
+    # on a post in ``#caio-aprovacoes`` (Fase A of the Discord-as-action layer).
+    # Both stay ``None`` for decisions made directly in the Cockpit UI. Frontend
+    # uses these to render a "Decidido no Discord" badge with deep link instead
+    # of the Approve/Reject buttons.
+    discord_message_id: str | None = Field(default=None, index=True)
+    discord_channel_id: str | None = None

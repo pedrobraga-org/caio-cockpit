@@ -13,7 +13,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from hmac import compare_digest
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -127,6 +129,8 @@ def _decision_read(row: CaioEventDecision) -> CaioEventDecisionRead:
         note=row.note,
         started_at=row.started_at,
         completed_at=row.completed_at,
+        discord_message_id=row.discord_message_id,
+        discord_channel_id=row.discord_channel_id,
     )
 
 
@@ -197,10 +201,19 @@ async def recent_think_loop_events(
     ),
 )
 async def mark_think_loop_decision(
+    request: Request,
     payload: CaioDecisionRequest,
-    auth: AuthContext = AUTH_CONTEXT_DEP,
+    auth: AuthContext = WORKER_AUTH_DEP,
     session: AsyncSession = SESSION_DEP,
 ) -> CaioDecisionResponse:
+    """Record Pedro's verdict on a Caio Think Loop event.
+
+    Auth: accepts both CF Access user (Cockpit UI) AND
+    ``X-Cockpit-Worker-Token`` (Discord ``#caio-aprovacoes`` reaction bot).
+    Fase A treats decisions as **terminal**: first call wins. Same-decision
+    re-POSTs are idempotent. Conflicting re-POSTs return ``409``. When the
+    worker token is used (bot path), ``discord_message_id`` is required.
+    """
     # Defense-in-depth: even though the setting is locked to "mark_only" in
     # config, refuse explicitly if someone overrode it via env at runtime.
     if settings.cockpit_approve_mode != "mark_only":
@@ -214,61 +227,85 @@ async def mark_think_loop_decision(
     if auth.user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
-    existing = (
-        await session.exec(
-            select(CaioEventDecision).where(
-                col(CaioEventDecision.event_id) == payload.event_id,
+    # Detect bot path: if the request authenticated via the worker token
+    # header, require Discord metadata. CF Access (user) path may omit it.
+    presented_worker_token = (
+        request.headers.get("X-Cockpit-Worker-Token") or ""
+    ).strip()
+    expected_worker_token = (settings.cockpit_worker_token or "").strip()
+    via_worker_token = bool(
+        presented_worker_token
+        and expected_worker_token
+        and compare_digest(presented_worker_token, expected_worker_token)
+    )
+    if via_worker_token and not payload.discord_message_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "discord_message_id is required when calling /decisions with "
+                "the worker token (bot path)."
             ),
         )
-    ).one_or_none()
 
-    if existing is not None:
-        existing.decision = payload.decision
-        existing.note = payload.note
-        existing.decided_by_user_id = auth.user.id
-        # decided_at is *not* refreshed on update: keep the original "first
-        # marked" timestamp; UI can show a separate "edited" timestamp later if
-        # needed. Keeping it stable avoids feed reshuffling.
-        session.add(existing)
+    # INSERT-first: UNIQUE(event_id) makes terminal-decision atomic. If INSERT
+    # succeeds we kept the first decision. On IntegrityError, re-SELECT and
+    # apply Fase A's first-wins rule: idempotent on match, 409 on conflict.
+    row: CaioEventDecision = CaioEventDecision(
+        event_id=payload.event_id,
+        decision=payload.decision,
+        decided_by_user_id=auth.user.id,
+        note=payload.note,
+        discord_message_id=payload.discord_message_id,
+        discord_channel_id=payload.discord_channel_id,
+    )
+    session.add(row)
+    try:
         await session.commit()
-        await session.refresh(existing)
-        row = existing
-    else:
-        row = CaioEventDecision(
-            event_id=payload.event_id,
-            decision=payload.decision,
-            decided_by_user_id=auth.user.id,
-            note=payload.note,
+        await session.refresh(row)
+    except IntegrityError:
+        await session.rollback()
+        existing = (
+            await session.exec(
+                select(CaioEventDecision).where(
+                    col(CaioEventDecision.event_id) == payload.event_id,
+                ),
+            )
+        ).one_or_none()
+        if existing is None:
+            # The IntegrityError was NOT the event_id unique conflict; re-raise
+            # so the framework returns an honest 500.
+            raise
+        same_decision = existing.decision == payload.decision
+        # Compatible discord metadata: incoming None never conflicts; both None
+        # is fine; both equal is fine. Differing non-null values conflict.
+        compatible_msg = (
+            payload.discord_message_id is None
+            or existing.discord_message_id is None
+            or existing.discord_message_id == payload.discord_message_id
         )
-        session.add(row)
-        try:
-            await session.commit()
-        except IntegrityError:
-            # Race: someone else inserted between our SELECT and INSERT. Reload
-            # and apply the requested decision on top (last-writer-wins).
-            await session.rollback()
-            existing = (
-                await session.exec(
-                    select(CaioEventDecision).where(
-                        col(CaioEventDecision.event_id) == payload.event_id,
-                    ),
-                )
-            ).one()
-            existing.decision = payload.decision
-            existing.note = payload.note
-            existing.decided_by_user_id = auth.user.id
-            session.add(existing)
-            await session.commit()
-            await session.refresh(existing)
+        if same_decision and compatible_msg:
             row = existing
         else:
-            await session.refresh(row)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"event_id={payload.event_id!r} already has terminal "
+                    f"decision={existing.decision!r}"
+                    + (
+                        f" via discord_message_id={existing.discord_message_id}"
+                        if existing.discord_message_id
+                        else ""
+                    )
+                    + ". Fase A treats first decision as terminal."
+                ),
+            )
 
     logger.info(
-        "caio.decision.marked event_id=%s decision=%s user_id=%s mode=%s",
+        "caio.decision.marked event_id=%s decision=%s user_id=%s via=%s mode=%s",
         row.event_id,
         row.decision,
         row.decided_by_user_id,
+        "worker_token" if via_worker_token else "user_auth",
         settings.cockpit_approve_mode,
     )
 
@@ -280,6 +317,8 @@ async def mark_think_loop_decision(
         note=row.note,
         started_at=row.started_at,
         completed_at=row.completed_at,
+        discord_message_id=row.discord_message_id,
+        discord_channel_id=row.discord_channel_id,
     )
 
 

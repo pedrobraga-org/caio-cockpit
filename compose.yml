@@ -84,6 +84,7 @@ services:
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-auto}
         NEXT_PUBLIC_AUTH_MODE: ${AUTH_MODE}
+        NEXT_PUBLIC_DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:-}
     # Optional, user-managed env file.
     # IMPORTANT: do NOT load `.env.example` here because it contains non-empty
     # placeholder Clerk keys, which can accidentally flip Clerk "on".
@@ -93,6 +94,7 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-auto}
       NEXT_PUBLIC_AUTH_MODE: ${AUTH_MODE}
+      NEXT_PUBLIC_DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:-}
     depends_on:
       - backend
     ports:
