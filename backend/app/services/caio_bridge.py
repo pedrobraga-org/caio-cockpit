@@ -33,10 +33,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
+import subprocess
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
@@ -56,6 +59,18 @@ except ImportError:  # pragma: no cover - dev environments only
 logger = get_logger(__name__)
 
 BridgeStatus = Literal["ok", "error", "disabled", "circuit_open", "timeout"]
+
+
+class PathTraversalError(OSError):
+    """Rejected user-supplied path with ``..`` or an absolute root."""
+
+
+class PathEscapeError(OSError):
+    """Rejected path that resolves outside the configured runtime directory."""
+
+
+class BrainRuntimeContractError(OSError):
+    """The local BRAIN runtime contract exists but is malformed."""
 
 
 @dataclass(slots=True)
@@ -551,6 +566,593 @@ class WebhookPostgresReader(BridgeBase):
                 bounded_days,
                 bounded_min,
                 bounded_limit,
+            )
+
+        return await self.safe_read(_q)
+
+
+class BrainRuntimeReader(BridgeBase):
+    """Read-only bridge over the local-first Caio BRAIN runtime contract.
+
+    This reader intentionally exposes a bounded read model instead of arbitrary
+    file browsing. Markdown artifacts are returned as projections/cache with
+    redacted snippets; structured stores are surfaced as metadata only.
+    """
+
+    name = "brain_runtime"
+    snippet_max_chars: int = 1200
+    audit_output_max_chars: int = 2000
+
+    _CONTRACT_PATH = "BRAIN_RUNTIME.md"
+    _FIXED_MARKDOWN_ARTIFACTS: tuple[tuple[str, str], ...] = (
+        ("SOUL.md", "local_runtime_contract"),
+        ("USER.md", "local_runtime_contract"),
+        ("memory/PEDRO_VIDA.md", "markdown_projection"),
+    )
+    _STRUCTURED_ARTIFACTS: tuple[tuple[str, str, str], ...] = (
+        ("memory/main.sqlite", "sqlite_store", "application/vnd.sqlite3"),
+        ("lcm.db", "sqlite_store", "application/vnd.sqlite3"),
+        ("caio_pedro_facts", "structured_fact_store", "application/json"),
+    )
+    _REQUIRED_CONTRACT_FIELDS: tuple[tuple[str, type], ...] = (
+        ("contract_version", int),
+        ("runtime_truth", str),
+        ("icloud_source_of_truth_allowed", bool),
+        ("obsidian_source_of_truth_allowed", bool),
+        ("human_markdown_projection_role", str),
+    )
+
+    def __init__(
+        self,
+        *,
+        runtime_dir: Path,
+        enabled: bool,
+        timeout_s: float | None = None,
+        audit_script_path: Path | None = None,
+        lcm_db_path: Path | None = None,
+        facts_path: Path | None = None,
+    ) -> None:
+        super().__init__(enabled=enabled, timeout_s=timeout_s)
+        self._runtime_dir = runtime_dir.expanduser().resolve(strict=False)
+        self._audit_script_path = (
+            audit_script_path.expanduser().resolve(strict=False)
+            if audit_script_path is not None
+            else None
+        )
+        self._lcm_db_path = (
+            lcm_db_path.expanduser().resolve(strict=False)
+            if lcm_db_path is not None
+            else None
+        )
+        self._facts_path = (
+            facts_path.expanduser().resolve(strict=False)
+            if facts_path is not None
+            else None
+        )
+
+    @property
+    def runtime_dir(self) -> Path:
+        return self._runtime_dir
+
+    def limits_payload(self, *, collection_limit: int = 5) -> dict[str, int]:
+        return {
+            "snippet_max_chars": self.snippet_max_chars,
+            "collection_limit": collection_limit,
+            "audit_output_max_chars": self.audit_output_max_chars,
+        }
+
+    # ------------------------------------------------------------------ paths
+
+    def _safe_runtime_path(self, relative_path: str) -> Path:
+        relative = Path(relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise PathTraversalError(f"invalid runtime path: {relative_path}")
+        candidate = self._runtime_dir / relative
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(self._runtime_dir)
+        except ValueError as exc:
+            raise PathEscapeError(f"runtime path escapes root: {relative_path}") from exc
+        return candidate
+
+    def _optional_structured_path(self, key: str) -> Path:
+        if key == "lcm.db" and self._lcm_db_path is not None:
+            return self._lcm_db_path
+        if key == "caio_pedro_facts" and self._facts_path is not None:
+            return self._facts_path
+        return self._safe_runtime_path(key)
+
+    # ------------------------------------------------------------------ payload
+
+    def _now_iso(self) -> str:
+        return datetime.now(tz=timezone.utc).isoformat()
+
+    def _content_type_for(self, key: str) -> str:
+        if key.endswith(".md"):
+            return "text/markdown"
+        if key.endswith((".sqlite", ".db")):
+            return "application/vnd.sqlite3"
+        if key.endswith(".json") or key == "caio_pedro_facts":
+            return "application/json"
+        return "application/octet-stream"
+
+    def _freshness_for_stat(
+        self,
+        *,
+        observed_at: str,
+        st_mtime: float | None,
+    ) -> dict[str, Any]:
+        if st_mtime is None:
+            return {
+                "status": "missing",
+                "observed_at": observed_at,
+                "modified_at": None,
+                "age_seconds": None,
+            }
+        modified = datetime.fromtimestamp(st_mtime, tz=timezone.utc)
+        observed = datetime.fromisoformat(observed_at)
+        return {
+            "status": "observed",
+            "observed_at": observed_at,
+            "modified_at": modified.isoformat(),
+            "age_seconds": max(0, int((observed - modified).total_seconds())),
+        }
+
+    def _payload_metadata(
+        self,
+        *,
+        content_type: str,
+        size_bytes: int | None = None,
+        snippet: str | None = None,
+        snippet_truncated: bool = False,
+        snippet_redacted: bool = False,
+        collection_count: int | None = None,
+        recent_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "content_type": content_type,
+            "size_bytes": size_bytes,
+            "sha256": None,
+            "snippet_chars": len(snippet or ""),
+            "snippet_truncated": snippet_truncated,
+            "snippet_redacted": snippet_redacted,
+            "collection_count": collection_count,
+            "recent_paths": recent_paths or [],
+        }
+
+    def _redact_text(self, text: str) -> tuple[str, bool]:
+        redacted = re.sub(
+            r"(?i)\b((?:api[_ -]?key|token|secret|password|authorization)"
+            r"\s*(?:is|=|:)\s*)([^\s`'\"<>]{6,})",
+            r"\1[REDACTED]",
+            text,
+        )
+        redacted = re.sub(
+            r"(?i)\b(Bearer\s+)([A-Za-z0-9._~+/\-]+=*)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"\bsk-(?:proj-)?[A-Za-z0-9_-]{8,}\b",
+            "[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b",
+            "[REDACTED]",
+            redacted,
+        )
+        return redacted, redacted != text
+
+    def _read_bounded_snippet(self, path: Path) -> tuple[str, bool, bool]:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            raw = handle.read(self.snippet_max_chars + 1)
+        truncated = len(raw) > self.snippet_max_chars
+        snippet = raw[: self.snippet_max_chars]
+        redacted, did_redact = self._redact_text(snippet)
+        return redacted, truncated, did_redact
+
+    def _bounded_redacted_output(self, text: str | bytes | None) -> str | None:
+        if text is None:
+            return None
+        raw = (
+            text.decode("utf-8", errors="replace")
+            if isinstance(text, bytes)
+            else text
+        )
+        bounded = raw[: self.audit_output_max_chars]
+        redacted, _did_redact = self._redact_text(bounded)
+        return redacted
+
+    # ------------------------------------------------------------------ records
+
+    def _inventory_item(
+        self,
+        *,
+        key: str,
+        path: Path,
+        source: str,
+        observed_at: str,
+        content_type: str | None = None,
+        display_path: str | None = None,
+    ) -> dict[str, Any]:
+        content = content_type or self._content_type_for(key)
+        try:
+            if not path.exists():
+                return {
+                    "key": key,
+                    "path": display_path or key,
+                    "source": source,
+                    "exists": False,
+                    "error_class": None,
+                    "freshness": self._freshness_for_stat(
+                        observed_at=observed_at, st_mtime=None
+                    ),
+                    "payload_metadata": self._payload_metadata(content_type=content),
+                }
+            stat_result = path.stat()
+        except OSError as exc:
+            return {
+                "key": key,
+                "path": display_path or key,
+                "source": source,
+                "exists": False,
+                "error_class": type(exc).__name__,
+                "freshness": self._freshness_for_stat(
+                    observed_at=observed_at, st_mtime=None
+                ),
+                "payload_metadata": self._payload_metadata(content_type=content),
+            }
+        return {
+            "key": key,
+            "path": display_path or key,
+            "source": source,
+            "exists": True,
+            "error_class": None,
+            "freshness": self._freshness_for_stat(
+                observed_at=observed_at,
+                st_mtime=stat_result.st_mtime,
+            ),
+            "payload_metadata": self._payload_metadata(
+                content_type=content,
+                size_bytes=stat_result.st_size,
+            ),
+        }
+
+    def _read_record(
+        self,
+        *,
+        key: str,
+        path: Path,
+        source: str,
+        observed_at: str,
+        display_path: str | None = None,
+    ) -> dict[str, Any]:
+        if not path.exists():
+            raise FileNotFoundError(key)
+        stat_result = path.stat()
+        content_type = self._content_type_for(key)
+        snippet: str | None = None
+        snippet_truncated = False
+        snippet_redacted = False
+        if content_type == "text/markdown":
+            snippet, snippet_truncated, snippet_redacted = self._read_bounded_snippet(
+                path
+            )
+        freshness = self._freshness_for_stat(
+            observed_at=observed_at,
+            st_mtime=stat_result.st_mtime,
+        )
+        out_path = display_path or key
+        return {
+            "key": key,
+            "path": out_path,
+            "source": source,
+            "provenance": {
+                "store": "caio-brain-runtime",
+                "key": key,
+                "path": out_path,
+                "observed_at": observed_at,
+                "confidence": None,
+            },
+            "freshness": freshness,
+            "payload_metadata": self._payload_metadata(
+                content_type=content_type,
+                size_bytes=stat_result.st_size,
+                snippet=snippet,
+                snippet_truncated=snippet_truncated,
+                snippet_redacted=snippet_redacted,
+            ),
+            "snippet": snippet,
+        }
+
+    def _collection_inventory(
+        self,
+        *,
+        key: str,
+        source: str,
+        entries: list[tuple[str, Path]],
+        observed_at: str,
+    ) -> dict[str, Any]:
+        mtimes: list[float] = []
+        for _rel, path in entries:
+            try:
+                mtimes.append(path.stat().st_mtime)
+            except OSError:
+                continue
+        return {
+            "key": key,
+            "path": key,
+            "source": source,
+            "exists": bool(entries),
+            "error_class": None,
+            "freshness": self._freshness_for_stat(
+                observed_at=observed_at,
+                st_mtime=max(mtimes) if mtimes else None,
+            ),
+            "payload_metadata": self._payload_metadata(
+                content_type="application/x.caio-brain-collection",
+                collection_count=len(entries),
+                recent_paths=[rel for rel, _path in entries],
+            ),
+        }
+
+    # ------------------------------------------------------------------ contract
+
+    def _load_contract_summary(self, observed_at: str) -> dict[str, Any] | None:
+        del observed_at
+        contract_path = self._safe_runtime_path(self._CONTRACT_PATH)
+        if not contract_path.exists():
+            raise FileNotFoundError(self._CONTRACT_PATH)
+        text = contract_path.read_text(encoding="utf-8", errors="replace")
+        match = re.search(
+            r"<!--\s*brain-runtime-contract:begin\s*-->\s*```json\s*(.*?)\s*```",
+            text,
+            flags=re.DOTALL,
+        )
+        if match is None:
+            raise BrainRuntimeContractError("BRAIN_RUNTIME.md contract block missing")
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError as exc:
+            raise BrainRuntimeContractError("BRAIN_RUNTIME.md contract JSON invalid") from exc
+        if not isinstance(payload, dict):
+            raise BrainRuntimeContractError("BRAIN_RUNTIME.md contract JSON is not an object")
+        for field_name, field_type in self._REQUIRED_CONTRACT_FIELDS:
+            if not isinstance(payload.get(field_name), field_type):
+                raise BrainRuntimeContractError(
+                    f"BRAIN_RUNTIME.md contract field invalid: {field_name}"
+                )
+        return payload
+
+    # ------------------------------------------------------------------ discovery
+
+    def _recent_runtime_files(
+        self,
+        *,
+        directory: str,
+        pattern: str,
+        limit: int,
+        exclude_names: set[str] | None = None,
+    ) -> list[tuple[str, Path]]:
+        base = self._safe_runtime_path(directory)
+        if not base.exists() or not base.is_dir():
+            return []
+        excluded = exclude_names or set()
+        entries: list[tuple[str, Path, float]] = []
+        for candidate in base.glob(pattern):
+            if candidate.name in excluded:
+                continue
+            try:
+                rel = candidate.relative_to(self._runtime_dir).as_posix()
+                self._safe_runtime_path(rel)
+                mtime = candidate.lstat().st_mtime
+            except OSError:
+                continue
+            if candidate.is_file() or candidate.is_symlink():
+                entries.append((rel, candidate, mtime))
+        entries.sort(key=lambda item: item[2], reverse=True)
+        return [(rel, path) for rel, path, _mtime in entries[:limit]]
+
+    def _discover_audit_script(self) -> Path | None:
+        candidates: list[Path] = []
+        if self._audit_script_path is not None:
+            candidates.append(self._audit_script_path)
+        candidates.extend(
+            [
+                self._runtime_dir / "brain-runtime-audit.sh",
+                self._runtime_dir / "tools-dev" / "brain-runtime-audit.sh",
+            ]
+        )
+        parents = list(self._runtime_dir.parents)
+        if len(parents) >= 2:
+            candidates.append(parents[1] / "tools-dev" / "brain-runtime-audit.sh")
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
+
+    def _run_audit(self) -> dict[str, Any]:
+        script = self._discover_audit_script()
+        if script is None:
+            return {
+                "status": "unavailable",
+                "available": False,
+                "exit_code": None,
+                "error_class": None,
+                "script_path": None,
+                "stdout": None,
+                "stderr": None,
+            }
+        command = [
+            "bash",
+            script.as_posix(),
+            "--root",
+            self._runtime_dir.as_posix(),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=self._runtime_dir.as_posix(),
+                capture_output=True,
+                text=True,
+                timeout=max(0.1, self.timeout_s * 0.8),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "status": "timeout",
+                "available": True,
+                "exit_code": None,
+                "error_class": type(exc).__name__,
+                "script_path": script.as_posix(),
+                "stdout": self._bounded_redacted_output(exc.stdout),
+                "stderr": self._bounded_redacted_output(exc.stderr),
+            }
+        except OSError as exc:
+            return {
+                "status": "error",
+                "available": True,
+                "exit_code": None,
+                "error_class": type(exc).__name__,
+                "script_path": script.as_posix(),
+                "stdout": None,
+                "stderr": None,
+            }
+        return {
+            "status": "ok" if completed.returncode == 0 else "error",
+            "available": True,
+            "exit_code": completed.returncode,
+            "error_class": None if completed.returncode == 0 else "AuditFailed",
+            "script_path": script.as_posix(),
+            "stdout": self._bounded_redacted_output(completed.stdout),
+            "stderr": self._bounded_redacted_output(completed.stderr),
+        }
+
+    # ------------------------------------------------------------------ read API
+
+    def _sync_status(self, limit: int) -> dict[str, Any]:
+        if not self._runtime_dir.exists():
+            raise FileNotFoundError(self._runtime_dir.as_posix())
+        if not self._runtime_dir.is_dir():
+            raise NotADirectoryError(self._runtime_dir.as_posix())
+
+        observed_at = self._now_iso()
+        inventory: list[dict[str, Any]] = []
+        reads: list[dict[str, Any]] = []
+
+        contract_path = self._safe_runtime_path(self._CONTRACT_PATH)
+        contract = self._load_contract_summary(observed_at)
+        inventory.append(
+            self._inventory_item(
+                key=self._CONTRACT_PATH,
+                path=contract_path,
+                source="runtime_contract",
+                observed_at=observed_at,
+                content_type="text/markdown",
+            )
+        )
+
+        for key, source in self._FIXED_MARKDOWN_ARTIFACTS:
+            path = self._safe_runtime_path(key)
+            inventory.append(
+                self._inventory_item(
+                    key=key,
+                    path=path,
+                    source=source,
+                    observed_at=observed_at,
+                )
+            )
+            if path.exists():
+                reads.append(
+                    self._read_record(
+                        key=key,
+                        path=path,
+                        source=source,
+                        observed_at=observed_at,
+                    )
+                )
+
+        collections: tuple[tuple[str, str, str, set[str]], ...] = (
+            ("memory/*.md", "memory", "*.md", {"PEDRO_VIDA.md"}),
+            ("Braindump/*.md", "Braindump", "*.md", set()),
+            ("contatos/*.md", "contatos", "*.md", set()),
+        )
+        for collection_key, directory, pattern, excluded in collections:
+            entries = self._recent_runtime_files(
+                directory=directory,
+                pattern=pattern,
+                limit=limit,
+                exclude_names=excluded,
+            )
+            inventory.append(
+                self._collection_inventory(
+                    key=collection_key,
+                    source="markdown_projection",
+                    entries=entries,
+                    observed_at=observed_at,
+                )
+            )
+            for rel, path in entries:
+                inventory.append(
+                    self._inventory_item(
+                        key=rel,
+                        path=path,
+                        source="markdown_projection",
+                        observed_at=observed_at,
+                    )
+                )
+                reads.append(
+                    self._read_record(
+                        key=rel,
+                        path=path,
+                        source="markdown_projection",
+                        observed_at=observed_at,
+                    )
+                )
+
+        for key, source, content_type in self._STRUCTURED_ARTIFACTS:
+            path = self._optional_structured_path(key)
+            inventory.append(
+                self._inventory_item(
+                    key=key,
+                    path=path,
+                    source=source,
+                    observed_at=observed_at,
+                    content_type=content_type,
+                    display_path=key,
+                )
+            )
+
+        return {
+            "contract": contract,
+            "inventory": inventory,
+            "reads": reads,
+            "audit": self._run_audit(),
+            "limits": self.limits_payload(collection_limit=limit),
+        }
+
+    async def status(self, *, limit: int = 5) -> BridgeResult:
+        """Return BRAIN status, contract summary, inventory, reads, and audit."""
+        bounded_limit = max(1, min(int(limit), 50))
+
+        async def _q() -> dict[str, Any]:
+            return await asyncio.to_thread(self._sync_status, bounded_limit)
+
+        return await self.safe_read(_q)
+
+    async def read_artifact(self, relative_path: str) -> BridgeResult:
+        """Read one bounded artifact by runtime-relative path; never raises."""
+
+        async def _q() -> dict[str, Any]:
+            observed_at = self._now_iso()
+            path = self._safe_runtime_path(relative_path)
+            return await asyncio.to_thread(
+                self._read_record,
+                key=relative_path,
+                path=path,
+                source="markdown_projection",
+                observed_at=observed_at,
             )
 
         return await self.safe_read(_q)

@@ -200,3 +200,126 @@ class CaioWaApprovalsResponse(BaseModel):
     latency_ms: int = 0
     window: CaioWaWindow | None = None
     contacts: list[CaioWaContactStats] = Field(default_factory=list)
+
+
+CaioBrainReadSource = Literal[
+    "runtime_contract",
+    "local_runtime_contract",
+    "markdown_projection",
+    "sqlite_store",
+    "structured_fact_store",
+    "audit",
+]
+
+
+class CaioBrainContractSummary(BaseModel):
+    """Machine-readable summary from ``BRAIN_RUNTIME.md``."""
+
+    contract_version: int
+    runtime_truth: str
+    icloud_source_of_truth_allowed: bool
+    obsidian_source_of_truth_allowed: bool
+    human_markdown_projection_role: str
+    required_terms: list[str] = Field(default_factory=list)
+    critical_backup_areas: list[str] = Field(default_factory=list)
+    backup_name_patterns: list[str] = Field(default_factory=list)
+    allowlist_required_fields: list[str] = Field(default_factory=list)
+    allowlist_date_format: str | None = None
+
+
+class CaioBrainFreshness(BaseModel):
+    """Freshness/provenance timestamp block for a BRAIN artifact."""
+
+    status: str
+    observed_at: str
+    modified_at: str | None = None
+    age_seconds: int | None = None
+
+
+class CaioBrainProvenance(BaseModel):
+    """BrainRead-style provenance metadata."""
+
+    store: str
+    key: str
+    observed_at: str
+    path: str | None = None
+    confidence: float | None = None
+
+
+class CaioBrainPayloadMetadata(BaseModel):
+    """Bounded payload metadata; snippets are auxiliary, never source of truth."""
+
+    content_type: str
+    size_bytes: int | None = None
+    sha256: str | None = None
+    snippet_chars: int = 0
+    snippet_truncated: bool = False
+    snippet_redacted: bool = False
+    collection_count: int | None = None
+    recent_paths: list[str] = Field(default_factory=list)
+
+
+class CaioBrainInventoryItem(BaseModel):
+    """Inventory/freshness entry for one expected BRAIN artifact."""
+
+    key: str
+    path: str | None = None
+    source: CaioBrainReadSource
+    exists: bool
+    error_class: str | None = None
+    freshness: CaioBrainFreshness
+    payload_metadata: CaioBrainPayloadMetadata
+
+
+class CaioBrainRead(BaseModel):
+    """Structured read record shaped after the BRAIN ``BrainRead`` contract."""
+
+    key: str
+    source: CaioBrainReadSource
+    provenance: CaioBrainProvenance
+    freshness: CaioBrainFreshness
+    payload_metadata: CaioBrainPayloadMetadata
+    path: str | None = None
+    snippet: str | None = Field(
+        default=None,
+        description=(
+            "Bounded, redacted auxiliary excerpt. It is not runtime truth and "
+            "must not be used as a Markdown scraping fallback."
+        ),
+    )
+
+
+class CaioBrainAuditStatus(BaseModel):
+    """Status returned by ``brain-runtime-audit.sh`` when available."""
+
+    status: Literal["ok", "error", "timeout", "unavailable"]
+    available: bool
+    exit_code: int | None = None
+    error_class: str | None = None
+    script_path: str | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+
+
+class CaioBrainLimits(BaseModel):
+    """Response limits applied by the bridge."""
+
+    snippet_max_chars: int
+    collection_limit: int
+    audit_output_max_chars: int
+
+
+class CaioBrainStatusResponse(BaseModel):
+    """Read-only BRAIN bridge envelope."""
+
+    status: CaioBridgeStatus
+    error_class: str | None = Field(
+        default=None,
+        description="Set only when ``status`` is ``error`` or ``timeout``.",
+    )
+    latency_ms: int = 0
+    contract: CaioBrainContractSummary | None = None
+    inventory: list[CaioBrainInventoryItem] = Field(default_factory=list)
+    reads: list[CaioBrainRead] = Field(default_factory=list)
+    audit: CaioBrainAuditStatus | None = None
+    limits: CaioBrainLimits

@@ -58,6 +58,16 @@ services:
       CAIO_STATE_DIR: ${CAIO_STATE_DIR:-/data/caio-state}
       CAIO_BRIDGE_EVENTS_ENABLED: ${CAIO_BRIDGE_EVENTS_ENABLED:-true}
       CAIO_BRIDGE_CRITIQUES_ENABLED: ${CAIO_BRIDGE_CRITIQUES_ENABLED:-true}
+      # Caio BRAIN local-first runtime bridge. CAIO_BRAIN_RUNTIME_HOST_DIR
+      # should point at ~/.openclaw/workspaces/caio-runtime; it is exposed
+      # read-only so the backend can inventory contract/projection/store files
+      # as the non-root appuser without broad ~/.openclaw access.
+      CAIO_BRAIN_RUNTIME_DIR: ${CAIO_BRAIN_RUNTIME_DIR:-/data/caio-brain-runtime}
+      CAIO_BRIDGE_BRAIN_ENABLED: ${CAIO_BRIDGE_BRAIN_ENABLED:-true}
+      CAIO_BRIDGE_BRAIN_TIMEOUT_S: ${CAIO_BRIDGE_BRAIN_TIMEOUT_S:-2.0}
+      CAIO_BRAIN_AUDIT_SCRIPT_PATH: ${CAIO_BRAIN_AUDIT_SCRIPT_PATH:-}
+      CAIO_BRAIN_LCM_DB_PATH: ${CAIO_BRAIN_LCM_DB_PATH:-}
+      CAIO_BRAIN_FACTS_PATH: ${CAIO_BRAIN_FACTS_PATH:-}
       # WhatsApp pipeline V3 Postgres bridge (cockpit_ro SELECT-only role).
       # Reaches the Evolution Postgres via host.docker.internal:5433.
       WEBHOOK_DATABASE_URL: ${WEBHOOK_DATABASE_URL:-}
@@ -67,6 +77,10 @@ services:
       # Empty default uses /dev/null so the bridge cleanly reports "error" when
       # CAIO_STATE_HOST_DIR isn't configured (avoids a hard fail at startup).
       - ${CAIO_STATE_HOST_DIR:-/dev/null}:/data/caio-state:ro
+      # Read-only bind: local-first Caio BRAIN runtime contract/projections.
+      # Empty default uses /dev/null so /caio/brain/status returns a non-500
+      # diagnostic error when the host dir is not configured.
+      - ${CAIO_BRAIN_RUNTIME_HOST_DIR:-/dev/null}:/data/caio-brain-runtime:ro
     depends_on:
       db:
         condition: service_healthy
