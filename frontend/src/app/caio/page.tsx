@@ -5,8 +5,13 @@ import {
   Brain,
   AlertTriangle,
   Check,
+  Database,
+  FileText,
+  HardDrive,
   Lightbulb,
   RefreshCw,
+  Search,
+  ShieldCheck,
   Sparkles,
   X as XIcon,
 } from "lucide-react";
@@ -16,6 +21,7 @@ import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout"
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   resolveBookmarkEvaluationCard,
@@ -143,7 +149,101 @@ type CaioRecentCritiquesResponse = {
   window: CaioCritiquesWindow;
 };
 
-type ActiveTab = "think_loop" | "reflexion" | "whatsapp";
+type CaioBrainReadSource =
+  | "runtime_contract"
+  | "local_runtime_contract"
+  | "markdown_projection"
+  | "sqlite_store"
+  | "structured_fact_store"
+  | "audit";
+
+type CaioBrainContractSummary = {
+  contract_version: number;
+  runtime_truth: string;
+  icloud_source_of_truth_allowed: boolean;
+  obsidian_source_of_truth_allowed: boolean;
+  human_markdown_projection_role: string;
+  required_terms: string[];
+  critical_backup_areas: string[];
+  backup_name_patterns: string[];
+  allowlist_required_fields: string[];
+  allowlist_date_format: string | null;
+};
+
+type CaioBrainFreshness = {
+  status: string;
+  observed_at: string;
+  modified_at: string | null;
+  age_seconds: number | null;
+};
+
+type CaioBrainPayloadMetadata = {
+  content_type: string;
+  size_bytes: number | null;
+  sha256: string | null;
+  snippet_chars: number;
+  snippet_truncated: boolean;
+  snippet_redacted: boolean;
+  collection_count: number | null;
+  recent_paths: string[];
+};
+
+type CaioBrainInventoryItem = {
+  key: string;
+  path: string | null;
+  source: CaioBrainReadSource;
+  exists: boolean;
+  error_class: string | null;
+  freshness: CaioBrainFreshness;
+  payload_metadata: CaioBrainPayloadMetadata;
+};
+
+type CaioBrainProvenance = {
+  store: string;
+  key: string;
+  observed_at: string;
+  path: string | null;
+  confidence: number | null;
+};
+
+type CaioBrainRead = {
+  key: string;
+  source: CaioBrainReadSource;
+  provenance: CaioBrainProvenance;
+  freshness: CaioBrainFreshness;
+  payload_metadata: CaioBrainPayloadMetadata;
+  path: string | null;
+  snippet: string | null;
+};
+
+type CaioBrainAuditStatus = {
+  status: "ok" | "error" | "timeout" | "unavailable";
+  available: boolean;
+  exit_code: number | null;
+  error_class: string | null;
+  script_path: string | null;
+  stdout: string | null;
+  stderr: string | null;
+};
+
+type CaioBrainLimits = {
+  snippet_max_chars: number;
+  collection_limit: number;
+  audit_output_max_chars: number;
+};
+
+type CaioBrainStatusResponse = {
+  status: CaioBridgeStatus;
+  error_class: string | null;
+  latency_ms: number;
+  contract: CaioBrainContractSummary | null;
+  inventory: CaioBrainInventoryItem[];
+  reads: CaioBrainRead[];
+  audit: CaioBrainAuditStatus | null;
+  limits: CaioBrainLimits;
+};
+
+type ActiveTab = "think_loop" | "reflexion" | "whatsapp" | "brain";
 
 const EVENT_TYPE_BADGES: Record<string, { label: string; tone: string }> = {
   "think_loop.proposal": {
@@ -594,6 +694,24 @@ function statusMessage(
   }
 }
 
+function brainStatusMessage(
+  status: CaioBridgeStatus,
+  errorClass: string | null,
+): string | null {
+  switch (status) {
+    case "ok":
+      return null;
+    case "disabled":
+      return "BRAIN bridge disabled";
+    case "timeout":
+      return `BRAIN bridge timeout${errorClass ? `: ${errorClass}` : ""}`;
+    case "error":
+      return `BRAIN bridge error${errorClass ? `: ${errorClass}` : ""}`;
+    case "circuit_open":
+      return "BRAIN bridge circuit open";
+  }
+}
+
 function formatJid(jid: string | null): string {
   if (!jid) return "—";
   // Strip the @s.whatsapp.net suffix; keep the digits the eye recognises.
@@ -607,6 +725,244 @@ function formatConfidence(value: number | null): string {
 
 function nullableText(value: string | null): string {
   return value ?? "null";
+}
+
+function formatBytes(value: number | null): string {
+  if (value === null || Number.isNaN(value)) return "—";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatAge(seconds: number | null): string {
+  if (seconds === null || Number.isNaN(seconds)) return "—";
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}min`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
+function formatSource(source: CaioBrainReadSource): string {
+  const labels: Record<CaioBrainReadSource, string> = {
+    runtime_contract: "runtime contract",
+    local_runtime_contract: "local runtime contract",
+    markdown_projection: "Markdown projection/cache",
+    sqlite_store: "runtime store",
+    structured_fact_store: "structured fact store",
+    audit: "audit",
+  };
+  return labels[source];
+}
+
+function formatBool(value: boolean): string {
+  return value ? "sim" : "não";
+}
+
+function brainTextMatches(query: string, values: Array<string | null>): boolean {
+  if (!query) return true;
+  return values.some((value) => value?.toLowerCase().includes(query));
+}
+
+function filteredRecentPaths(
+  item: CaioBrainInventoryItem,
+  query: string,
+): string[] {
+  const paths = item.payload_metadata.recent_paths;
+  if (!query) return paths;
+  return paths.filter((path) => path.toLowerCase().includes(query));
+}
+
+function BrainMetric({
+  icon,
+  label,
+  value,
+  detail,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: ReactNode;
+  detail?: ReactNode;
+}) {
+  return (
+    <Card>
+      <CardContent className="py-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="mt-0.5 inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-indigo-100 text-indigo-700">
+            {icon}
+          </span>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              {label}
+            </p>
+            <div className="mt-1 break-words text-sm font-semibold text-slate-900">
+              {value}
+            </div>
+            {detail ? (
+              <div className="mt-1 break-words text-xs text-slate-500">
+                {detail}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function BrainMetaRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        {label}
+      </dt>
+      <dd className="mt-1 break-words text-sm text-slate-800">{children}</dd>
+    </div>
+  );
+}
+
+function BrainPathList({ paths }: { paths: string[] }) {
+  if (paths.length === 0) return null;
+  return (
+    <ul className="mt-2 space-y-1">
+      {paths.slice(0, 6).map((path) => (
+        <li
+          key={path}
+          className="break-all rounded bg-slate-100 px-2 py-1 text-[11px] text-slate-700"
+          title={path}
+        >
+          {path}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function BrainInventoryCard({
+  item,
+  recentPaths,
+}: {
+  item: CaioBrainInventoryItem;
+  recentPaths: string[];
+}) {
+  const sourceTone = item.source === "sqlite_store" ? "success" : "outline";
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-3 pb-2">
+        <div className="min-w-0">
+          <p className="break-all text-sm font-semibold text-slate-900">
+            {item.key}
+          </p>
+          {item.path && item.path !== item.key ? (
+            <p className="mt-1 break-all text-xs text-slate-500">
+              {item.path}
+            </p>
+          ) : null}
+        </div>
+        <Badge variant={item.exists ? "success" : "danger"} className="shrink-0">
+          {item.exists ? "online" : "missing"}
+        </Badge>
+      </CardHeader>
+      <CardContent className="space-y-3 pt-2 text-sm text-slate-700">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={sourceTone}>{formatSource(item.source)}</Badge>
+          <span className="text-xs text-slate-500">
+            fresh {formatAge(item.freshness.age_seconds)}
+          </span>
+          {item.payload_metadata.collection_count !== null ? (
+            <span className="text-xs text-slate-500">
+              {item.payload_metadata.collection_count} artefatos
+            </span>
+          ) : null}
+        </div>
+        <dl className="grid gap-2 text-xs sm:grid-cols-2">
+          <BrainMetaRow label="Content type">
+            {item.payload_metadata.content_type}
+          </BrainMetaRow>
+          <BrainMetaRow label="Tamanho">
+            {formatBytes(item.payload_metadata.size_bytes)}
+          </BrainMetaRow>
+          <BrainMetaRow label="Observado">
+            {formatOccurredAt(item.freshness.observed_at)}
+          </BrainMetaRow>
+          <BrainMetaRow label="Modificado">
+            {item.freshness.modified_at
+              ? formatOccurredAt(item.freshness.modified_at)
+              : "—"}
+          </BrainMetaRow>
+        </dl>
+        <BrainPathList paths={recentPaths} />
+        {item.error_class ? (
+          <p className="break-all rounded border border-rose-200 bg-rose-50 p-2 text-xs text-rose-800">
+            {item.error_class}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function BrainReadCard({ read }: { read: CaioBrainRead }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <Badge
+            variant={read.source === "sqlite_store" ? "success" : "outline"}
+          >
+            {formatSource(read.source)}
+          </Badge>
+          <span className="break-all text-sm font-semibold text-slate-900">
+            BrainRead · {read.key}
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 pt-2 text-sm text-slate-700">
+        <dl className="grid gap-2 text-xs sm:grid-cols-2">
+          <BrainMetaRow label="Store">{read.provenance.store}</BrainMetaRow>
+          <BrainMetaRow label="Freshness">
+            {read.freshness.status} · {formatAge(read.freshness.age_seconds)}
+          </BrainMetaRow>
+          <BrainMetaRow label="Confidence">
+            {read.provenance.confidence === null
+              ? "—"
+              : `${Math.round(read.provenance.confidence * 100)}%`}
+          </BrainMetaRow>
+          <BrainMetaRow label="Payload">
+            {read.payload_metadata.content_type} ·{" "}
+            {formatBytes(read.payload_metadata.size_bytes)}
+          </BrainMetaRow>
+        </dl>
+        {read.provenance.path ? (
+          <p className="break-all rounded bg-slate-100 px-2 py-1 text-[11px] text-slate-600">
+            {read.provenance.path}
+          </p>
+        ) : null}
+        {read.snippet ? (
+          <div className="rounded-md border border-slate-200 bg-slate-50 p-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              bounded projection snippet
+            </p>
+            <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-800">
+              {read.snippet}
+            </p>
+            <p className="mt-2 text-[11px] text-slate-500">
+              Snippet auxiliar e limitado; não substitui BrainRead no runtime.
+            </p>
+          </div>
+        ) : (
+          <p className="rounded-md border border-indigo-200 bg-indigo-50 p-2 text-xs font-medium text-indigo-800">
+            Runtime store disponível sem snippet Markdown.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 function SkipCardField({
@@ -688,6 +1044,12 @@ export default function CaioPage() {
   const [waError, setWaError] = useState<string | null>(null);
   const [waDays, setWaDays] = useState<number>(7);
 
+  const [brainResponse, setBrainResponse] =
+    useState<CaioBrainStatusResponse | null>(null);
+  const [brainLoading, setBrainLoading] = useState<boolean>(false);
+  const [brainError, setBrainError] = useState<string | null>(null);
+  const [brainFilter, setBrainFilter] = useState<string>("");
+
   const [activeTab, setActiveTab] = useState<ActiveTab>("think_loop");
   const [activeBucket, setActiveBucket] = useState<StatusBucket>("pending");
 
@@ -767,6 +1129,28 @@ export default function CaioPage() {
       setCritiquesError(msg);
     } finally {
       setCritiquesLoading(false);
+    }
+  }, []);
+
+  const loadBrain = useCallback(async () => {
+    setBrainLoading(true);
+    setBrainError(null);
+    try {
+      const result = await customFetch<{ data: CaioBrainStatusResponse }>(
+        "/api/v1/caio/brain/status?limit=8",
+        { method: "GET" },
+      );
+      setBrainResponse(result.data);
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? `${err.status}: ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : "Failed to load BRAIN status";
+      setBrainError(msg);
+    } finally {
+      setBrainLoading(false);
     }
   }, []);
 
@@ -853,6 +1237,12 @@ export default function CaioPage() {
       void loadWa(waDays);
     }
   }, [activeTab, waResponse, waDays, loadWa]);
+
+  useEffect(() => {
+    if (activeTab === "brain" && brainResponse === null) {
+      void loadBrain();
+    }
+  }, [activeTab, brainResponse, loadBrain]);
 
   const rawItems = response?.items ?? [];
 
@@ -983,13 +1373,64 @@ export default function CaioPage() {
         )
       : null;
 
+  const brainBanner = brainResponse
+    ? brainStatusMessage(brainResponse.status, brainResponse.error_class)
+    : null;
+  const brainQuery = brainFilter.trim().toLowerCase();
+  const filteredInventory = (brainResponse?.inventory ?? [])
+    .map((item) => ({
+      item,
+      recentPaths: filteredRecentPaths(item, brainQuery),
+    }))
+    .filter(({ item, recentPaths }) =>
+      brainTextMatches(brainQuery, [
+        item.key,
+        item.path,
+        item.source,
+        item.error_class,
+        item.payload_metadata.content_type,
+        ...recentPaths,
+      ]),
+    );
+  const filteredReads = (brainResponse?.reads ?? []).filter((read) =>
+    brainTextMatches(brainQuery, [
+      read.key,
+      read.path,
+      read.source,
+      read.provenance.store,
+      read.provenance.key,
+      read.provenance.path,
+      read.snippet,
+      read.payload_metadata.content_type,
+    ]),
+  );
+  const runtimeStore = (brainResponse?.inventory ?? []).find(
+    (item) => item.source === "sqlite_store",
+  );
+  const braindumpInventory = (brainResponse?.inventory ?? []).find((item) =>
+    item.key.toLowerCase().includes("braindump"),
+  );
+  const contactsInventory = (brainResponse?.inventory ?? []).find((item) =>
+    /conta(?:ct|to)/.test(item.key.toLowerCase()),
+  );
+  const onlineArtifacts = (brainResponse?.inventory ?? []).filter(
+    (item) => item.exists,
+  ).length;
+  const totalProjectionCount = (brainResponse?.inventory ?? []).reduce(
+    (acc, item) => acc + (item.payload_metadata.collection_count ?? 0),
+    0,
+  );
+
   const onReload = (() => {
+    if (activeTab === "brain") return loadBrain;
     if (activeTab === "reflexion") return loadCritiques;
     if (activeTab === "whatsapp") return () => loadWa(waDays);
     return load;
   })();
   const reloadDisabled =
-    activeTab === "reflexion"
+    activeTab === "brain"
+      ? brainLoading
+      : activeTab === "reflexion"
       ? critiquesLoading
       : activeTab === "whatsapp"
         ? waLoading
@@ -1033,6 +1474,7 @@ export default function CaioPage() {
           <TabsTrigger value="think_loop">Think Loop</TabsTrigger>
           <TabsTrigger value="reflexion">Reflexion</TabsTrigger>
           <TabsTrigger value="whatsapp">WhatsApp</TabsTrigger>
+          <TabsTrigger value="brain">BRAIN</TabsTrigger>
         </TabsList>
 
         <TabsContent value="think_loop">
@@ -1684,6 +2126,310 @@ export default function CaioPage() {
               })}
             </div>
           )}
+        </TabsContent>
+
+        <TabsContent value="brain">
+          <div className="space-y-4">
+            <div className="rounded-md border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-950">
+              <p className="flex items-center gap-2 font-semibold">
+                <HardDrive className="h-4 w-4 flex-shrink-0 text-indigo-700" />
+                Runtime local-first é a fonte de verdade
+              </p>
+              <p className="mt-1 text-xs leading-5 text-indigo-900">
+                Markdown é projeção/cache humano; não é a API primária de
+                memória da IA.
+              </p>
+            </div>
+
+            {brainBanner ? (
+              <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                <span>{brainBanner}</span>
+              </div>
+            ) : null}
+
+            {brainError ? (
+              <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                {brainError}
+              </div>
+            ) : null}
+
+            {brainLoading && !brainResponse ? (
+              <p className="text-sm text-slate-500">Carregando BRAIN…</p>
+            ) : brainResponse ? (
+              <>
+                <div className="grid gap-3 md:grid-cols-4">
+                  <BrainMetric
+                    icon={<ShieldCheck className="h-4 w-4" />}
+                    label="Bridge"
+                    value={brainResponse.status}
+                    detail={
+                      brainResponse.error_class ??
+                      `${brainResponse.latency_ms}ms`
+                    }
+                  />
+                  <BrainMetric
+                    icon={<FileText className="h-4 w-4" />}
+                    label="Audit"
+                    value={brainResponse.audit?.status ?? "unavailable"}
+                    detail={
+                      brainResponse.audit?.available
+                        ? "brain-runtime-audit.sh disponível"
+                        : "audit indisponível"
+                    }
+                  />
+                  <BrainMetric
+                    icon={<Database className="h-4 w-4" />}
+                    label="Runtime store"
+                    value={runtimeStore?.exists ? "online" : "missing"}
+                    detail={
+                      runtimeStore
+                        ? formatSource(runtimeStore.source)
+                        : "memory/main.sqlite não encontrado"
+                    }
+                  />
+                  <BrainMetric
+                    icon={<Brain className="h-4 w-4" />}
+                    label="Artifacts"
+                    value={`${onlineArtifacts}/${brainResponse.inventory.length}`}
+                    detail={`${totalProjectionCount} projeções inventariadas`}
+                  />
+                </div>
+
+                <Card>
+                  <CardHeader className="pb-2">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">
+                          Contrato BRAIN
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Lido de BRAIN_RUNTIME.md; termos abaixo governam a
+                          ponte read-only do Cockpit.
+                        </p>
+                      </div>
+                      {brainResponse.contract ? (
+                        <Badge variant="accent">
+                          v{brainResponse.contract.contract_version}
+                        </Badge>
+                      ) : (
+                        <Badge variant="danger">indisponível</Badge>
+                      )}
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3 pt-2 text-sm text-slate-700">
+                    {brainResponse.contract ? (
+                      <>
+                        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                          <BrainMetaRow label="Runtime truth">
+                            {brainResponse.contract.runtime_truth}
+                          </BrainMetaRow>
+                          <BrainMetaRow label="Markdown role">
+                            {
+                              brainResponse.contract
+                                .human_markdown_projection_role
+                            }
+                          </BrainMetaRow>
+                          <BrainMetaRow label="iCloud source">
+                            {formatBool(
+                              brainResponse.contract
+                                .icloud_source_of_truth_allowed,
+                            )}
+                          </BrainMetaRow>
+                          <BrainMetaRow label="Obsidian source">
+                            {formatBool(
+                              brainResponse.contract
+                                .obsidian_source_of_truth_allowed,
+                            )}
+                          </BrainMetaRow>
+                        </dl>
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Required terms
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {brainResponse.contract.required_terms.map(
+                              (term) => (
+                                <Badge key={term} variant="outline">
+                                  {term}
+                                </Badge>
+                              ),
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid gap-3 text-xs sm:grid-cols-2">
+                          <BrainMetaRow label="Backup areas">
+                            {brainResponse.contract.critical_backup_areas.join(
+                              ", ",
+                            ) || "—"}
+                          </BrainMetaRow>
+                          <BrainMetaRow label="Allowlist fields">
+                            {brainResponse.contract.allowlist_required_fields.join(
+                              ", ",
+                            ) || "—"}
+                            {brainResponse.contract.allowlist_date_format
+                              ? ` · ${brainResponse.contract.allowlist_date_format}`
+                              : ""}
+                          </BrainMetaRow>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-sm text-slate-500">
+                        Contrato não disponível neste envelope. O Cockpit não
+                        tenta inferir memória primária a partir de Markdown.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      Inventário e leituras
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      Filtro local read-only para paths, JIDs, stores e
+                      snippets limitados.
+                    </p>
+                  </div>
+                  <div className="relative w-full md:w-80">
+                    <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                    <Input
+                      type="search"
+                      aria-label="Filtrar inventário e leituras BRAIN"
+                      value={brainFilter}
+                      onChange={(event) => setBrainFilter(event.target.value)}
+                      placeholder="Filtrar paths, JIDs, stores..."
+                      className="pl-9"
+                    />
+                  </div>
+                </div>
+
+                {filteredInventory.length === 0 &&
+                filteredReads.length === 0 ? (
+                  <Card>
+                    <CardContent className="py-6 text-sm text-slate-500">
+                      Nenhum artefato BRAIN disponível para exibir.
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-sm font-semibold text-slate-900">
+                          Artifact inventory
+                        </h2>
+                        {braindumpInventory ? (
+                          <Badge variant="outline">
+                            Braindump{" "}
+                            {braindumpInventory.payload_metadata
+                              .collection_count ?? 0}
+                          </Badge>
+                        ) : null}
+                        {contactsInventory ? (
+                          <Badge variant="outline">
+                            Contacts{" "}
+                            {contactsInventory.payload_metadata
+                              .collection_count ?? 0}
+                          </Badge>
+                        ) : null}
+                      </div>
+                      {filteredInventory.length === 0 ? (
+                        <Card>
+                          <CardContent className="py-6 text-sm text-slate-500">
+                            Nenhum item de inventário corresponde ao filtro.
+                          </CardContent>
+                        </Card>
+                      ) : (
+                        filteredInventory.map(({ item, recentPaths }) => (
+                          <BrainInventoryCard
+                            key={item.key}
+                            item={item}
+                            recentPaths={recentPaths}
+                          />
+                        ))
+                      )}
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-sm font-semibold text-slate-900">
+                          BrainRead projections
+                        </h2>
+                        <Badge variant="outline">
+                          {filteredReads.length} recentes
+                        </Badge>
+                      </div>
+                      {filteredReads.length === 0 ? (
+                        <Card>
+                          <CardContent className="py-6 text-sm text-slate-500">
+                            Nenhuma leitura corresponde ao filtro.
+                          </CardContent>
+                        </Card>
+                      ) : (
+                        filteredReads.map((read) => (
+                          <BrainReadCard key={read.key} read={read} />
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <Card>
+                  <CardHeader className="pb-2">
+                    <p className="text-sm font-semibold text-slate-900">
+                      Audit output
+                    </p>
+                  </CardHeader>
+                  <CardContent className="space-y-2 pt-2 text-sm text-slate-700">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge
+                        variant={
+                          brainResponse.audit?.status === "ok"
+                            ? "success"
+                            : brainResponse.audit?.status === "unavailable"
+                              ? "outline"
+                              : "danger"
+                        }
+                      >
+                        {brainResponse.audit?.status ?? "unavailable"}
+                      </Badge>
+                      {brainResponse.audit?.exit_code !== null &&
+                      brainResponse.audit?.exit_code !== undefined ? (
+                        <span className="text-xs text-slate-500">
+                          exit {brainResponse.audit.exit_code}
+                        </span>
+                      ) : null}
+                    </div>
+                    {brainResponse.audit?.script_path ? (
+                      <p className="break-all rounded bg-slate-100 px-2 py-1 text-[11px] text-slate-600">
+                        {brainResponse.audit.script_path}
+                      </p>
+                    ) : null}
+                    {brainResponse.audit?.stdout ? (
+                      <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800">
+                        {brainResponse.audit.stdout}
+                      </pre>
+                    ) : (
+                      <p className="text-sm text-slate-500">
+                        Sem stdout de audit neste envelope.
+                      </p>
+                    )}
+                    {brainResponse.audit?.stderr ? (
+                      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-rose-200 bg-rose-50 p-2 text-xs text-rose-800">
+                        {brainResponse.audit.stderr}
+                      </pre>
+                    ) : null}
+                    <p className="text-[11px] text-slate-500">
+                      Limites: snippets {brainResponse.limits.snippet_max_chars}
+                      chars · coleção {brainResponse.limits.collection_limit} ·
+                      audit {brainResponse.limits.audit_output_max_chars} chars.
+                    </p>
+                  </CardContent>
+                </Card>
+              </>
+            ) : null}
+          </div>
         </TabsContent>
       </Tabs>
     </DashboardPageLayout>
