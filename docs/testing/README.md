@@ -35,6 +35,17 @@ Notes:
 - Some tests may require a running Postgres (see root `compose.yml`).
 - `make backend-coverage` enforces a strict coverage gate on a scoped set of modules.
 
+### Caio BRAIN smoke
+
+Fixture smoke, no real runtime access:
+
+```bash
+make brain-smoke
+```
+
+Real runtime and running-backend variants are documented in
+[Caio BRAIN Cockpit Operations](../operations/caio-brain.md).
+
 ## Frontend tests
 
 From repo root:

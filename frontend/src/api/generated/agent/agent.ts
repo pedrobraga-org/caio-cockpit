@@ -33,12 +33,14 @@ import type {
   BoardOnboardingAgentQuestion,
   BoardOnboardingRead,
   BoardRead,
+  BoardWebhookPayloadRead,
   GatewayLeadBroadcastRequest,
   GatewayLeadBroadcastResponse,
   GatewayLeadMessageRequest,
   GatewayLeadMessageResponse,
   GatewayMainAskUserRequest,
   GatewayMainAskUserResponse,
+  GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetParams,
   HTTPValidationError,
   LLMErrorResponse,
   LimitOffsetPageTypeVarCustomizedAgentRead,
@@ -4035,6 +4037,358 @@ export const useCreateTaskCommentApiV1AgentBoardsBoardIdTasksTaskIdCommentsPost 
       queryClient,
     );
   };
+/**
+ * Fetch a stored webhook payload (agent-accessible, read-only).
+
+This enables board-scoped agents to backfill dropped webhook events and enforce
+idempotency by inspecting previously received payloads.
+
+If `max_chars` is provided and the serialized payload exceeds the limit,
+the response payload is returned as a truncated string preview.
+ * @summary Get Webhook Payload
+ */
+export type getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponse200 =
+  {
+    data: BoardWebhookPayloadRead;
+    status: 200;
+  };
+
+export type getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponse422 =
+  {
+    data: HTTPValidationError;
+    status: 422;
+  };
+
+export type getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponseSuccess =
+  getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponse200 & {
+    headers: Headers;
+  };
+export type getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponseError =
+  getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponse422 & {
+    headers: Headers;
+  };
+
+export type getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponse =
+
+    | getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponseSuccess
+    | getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponseError;
+
+export const getGetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetUrl =
+  (
+    boardId: string,
+    webhookId: string,
+    payloadId: string,
+    params?: GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetParams,
+  ) => {
+    const normalizedParams = new URLSearchParams();
+
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value !== undefined) {
+        normalizedParams.append(
+          key,
+          value === null ? "null" : value.toString(),
+        );
+      }
+    });
+
+    const stringifiedParams = normalizedParams.toString();
+
+    return stringifiedParams.length > 0
+      ? `/api/v1/agent/boards/${boardId}/webhooks/${webhookId}/payloads/${payloadId}?${stringifiedParams}`
+      : `/api/v1/agent/boards/${boardId}/webhooks/${webhookId}/payloads/${payloadId}`;
+  };
+
+export const getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet =
+  async (
+    boardId: string,
+    webhookId: string,
+    payloadId: string,
+    params?: GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetParams,
+    options?: RequestInit,
+  ): Promise<getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponse> => {
+    return customFetch<getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetResponse>(
+      getGetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetUrl(
+        boardId,
+        webhookId,
+        payloadId,
+        params,
+      ),
+      {
+        ...options,
+        method: "GET",
+      },
+    );
+  };
+
+export const getGetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetQueryKey =
+  (
+    boardId: string,
+    webhookId: string,
+    payloadId: string,
+    params?: GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetParams,
+  ) => {
+    return [
+      `/api/v1/agent/boards/${boardId}/webhooks/${webhookId}/payloads/${payloadId}`,
+      ...(params ? [params] : []),
+    ] as const;
+  };
+
+export const getGetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetQueryOptions =
+  <
+    TData = Awaited<
+      ReturnType<
+        typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+      >
+    >,
+    TError = HTTPValidationError,
+  >(
+    boardId: string,
+    webhookId: string,
+    payloadId: string,
+    params?: GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetParams,
+    options?: {
+      query?: Partial<
+        UseQueryOptions<
+          Awaited<
+            ReturnType<
+              typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+            >
+          >,
+          TError,
+          TData
+        >
+      >;
+      request?: SecondParameter<typeof customFetch>;
+    },
+  ) => {
+    const { query: queryOptions, request: requestOptions } = options ?? {};
+
+    const queryKey =
+      queryOptions?.queryKey ??
+      getGetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetQueryKey(
+        boardId,
+        webhookId,
+        payloadId,
+        params,
+      );
+
+    const queryFn: QueryFunction<
+      Awaited<
+        ReturnType<
+          typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+        >
+      >
+    > = ({ signal }) =>
+      getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet(
+        boardId,
+        webhookId,
+        payloadId,
+        params,
+        { signal, ...requestOptions },
+      );
+
+    return {
+      queryKey,
+      queryFn,
+      enabled: !!(boardId && webhookId && payloadId),
+      ...queryOptions,
+    } as UseQueryOptions<
+      Awaited<
+        ReturnType<
+          typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+        >
+      >,
+      TError,
+      TData
+    > & { queryKey: DataTag<QueryKey, TData, TError> };
+  };
+
+export type GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetQueryResult =
+  NonNullable<
+    Awaited<
+      ReturnType<
+        typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+      >
+    >
+  >;
+export type GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetQueryError =
+  HTTPValidationError;
+
+export function useGetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet<
+  TData = Awaited<
+    ReturnType<
+      typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+    >
+  >,
+  TError = HTTPValidationError,
+>(
+  boardId: string,
+  webhookId: string,
+  payloadId: string,
+  params:
+    | undefined
+    | GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<
+          ReturnType<
+            typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+          >
+        >,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<
+            ReturnType<
+              typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+            >
+          >,
+          TError,
+          Awaited<
+            ReturnType<
+              typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+            >
+          >
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet<
+  TData = Awaited<
+    ReturnType<
+      typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+    >
+  >,
+  TError = HTTPValidationError,
+>(
+  boardId: string,
+  webhookId: string,
+  payloadId: string,
+  params?: GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<
+          ReturnType<
+            typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+          >
+        >,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<
+            ReturnType<
+              typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+            >
+          >,
+          TError,
+          Awaited<
+            ReturnType<
+              typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+            >
+          >
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet<
+  TData = Awaited<
+    ReturnType<
+      typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+    >
+  >,
+  TError = HTTPValidationError,
+>(
+  boardId: string,
+  webhookId: string,
+  payloadId: string,
+  params?: GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<
+          ReturnType<
+            typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+          >
+        >,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Get Webhook Payload
+ */
+
+export function useGetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet<
+  TData = Awaited<
+    ReturnType<
+      typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+    >
+  >,
+  TError = HTTPValidationError,
+>(
+  boardId: string,
+  webhookId: string,
+  payloadId: string,
+  params?: GetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<
+          ReturnType<
+            typeof getWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGet
+          >
+        >,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions =
+    getGetWebhookPayloadApiV1AgentBoardsBoardIdWebhooksWebhookIdPayloadsPayloadIdGetQueryOptions(
+      boardId,
+      webhookId,
+      payloadId,
+      params,
+      options,
+    );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
 /**
  * Route a direct lead handoff or question from an agent to the board lead.
 

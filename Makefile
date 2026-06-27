@@ -83,6 +83,10 @@ test: backend-test frontend-test ## Run tests
 backend-test: ## Backend tests (pytest)
 	cd $(BACKEND_DIR) && uv run pytest
 
+.PHONY: brain-smoke
+brain-smoke: ## Smoke Caio BRAIN summary bridge (set BRAIN_SMOKE_ARGS="--runtime-dir ...")
+	cd $(BACKEND_DIR) && uv run python scripts/brain_smoke.py $(BRAIN_SMOKE_ARGS)
+
 .PHONY: backend-coverage
 backend-coverage: ## Backend tests with coverage gate (scoped 100% stmt+branch on selected modules)
 	# Policy: enforce 100% coverage only for the explicitly scoped, unit-testable backend modules.
