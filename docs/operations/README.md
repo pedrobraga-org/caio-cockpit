@@ -36,6 +36,8 @@ See [Caio BRAIN Cockpit Operations](caio-brain.md) for the read-only BRAIN
 contract, audit command, local smoke, status meanings, and Docker
 non-root/read-only mount proof.
 
+Final F5 live verification evidence: [Caio BRAIN Final Verification - 2026-06-27](caio-brain-final-verification-2026-06-27.md).
+
 ## Backups
 
 The DB runs in Postgres (Compose `db` service) and persists to the `postgres_data` named volume.
