@@ -10,10 +10,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+from hmac import compare_digest
 from pathlib import Path
 from typing import Any
-
-from hmac import compare_digest
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.exc import IntegrityError
@@ -27,6 +26,9 @@ from app.core.worker_auth import get_user_or_worker_auth_context
 from app.db.session import get_session
 from app.models.caio_decisions import CaioEventDecision
 from app.schemas.caio import (
+    CaioBrainAuditStatus,
+    CaioBrainLimits,
+    CaioBrainStatusResponse,
     CaioCritiqueItem,
     CaioCritiquesWindow,
     CaioDecisionRequest,
@@ -40,6 +42,7 @@ from app.schemas.caio import (
     CaioWaWindow,
 )
 from app.services.caio_bridge import (
+    BrainRuntimeReader,
     CritiquesSqliteReader,
     EventsSqliteReader,
     WebhookPostgresReader,
@@ -94,6 +97,7 @@ CRITIQUES_LIMIT_QUERY = Query(default=50, ge=1, le=500)
 WA_DAYS_QUERY = Query(default=7, ge=1, le=365)
 WA_MIN_INTERACTIONS_QUERY = Query(default=1, ge=1, le=1000)
 WA_LIMIT_QUERY = Query(default=50, ge=1, le=500)
+BRAIN_LIMIT_QUERY = Query(default=5, ge=1, le=50)
 
 
 @lru_cache(maxsize=1)
@@ -104,6 +108,64 @@ def _wa_reader() -> WebhookPostgresReader:
         dsn=dsn,
         enabled=enabled,
         timeout_s=settings.caio_bridge_wa_timeout_s,
+    )
+
+
+@lru_cache(maxsize=1)
+def _brain_reader() -> BrainRuntimeReader:
+    runtime_dir = settings.caio_brain_runtime_dir.strip()
+    enabled = settings.caio_bridge_brain_enabled and bool(runtime_dir)
+    audit_path = settings.caio_brain_audit_script_path.strip()
+    lcm_path = settings.caio_brain_lcm_db_path.strip()
+    facts_path = settings.caio_brain_facts_path.strip()
+    return BrainRuntimeReader(
+        runtime_dir=(
+            Path(runtime_dir)
+            if runtime_dir
+            else Path("/dev/null/caio-brain-runtime")
+        ),
+        enabled=enabled,
+        timeout_s=settings.caio_bridge_brain_timeout_s,
+        audit_script_path=Path(audit_path) if audit_path else None,
+        lcm_db_path=Path(lcm_path) if lcm_path else None,
+        facts_path=Path(facts_path) if facts_path else None,
+    )
+
+
+@router.get(
+    "/brain/status",
+    response_model=CaioBrainStatusResponse,
+    summary="Caio BRAIN runtime read-only bridge status",
+    description=(
+        "Returns the local-first BRAIN runtime contract summary, artifact "
+        "inventory/freshness, bounded BrainRead-style records, and audit "
+        "status. Markdown snippets are redacted auxiliary projections/cache; "
+        "they are never treated as the primary BRAIN API."
+    ),
+)
+async def brain_status(
+    limit: int = BRAIN_LIMIT_QUERY,
+    _auth: AuthContext = AUTH_CONTEXT_DEP,
+) -> CaioBrainStatusResponse:
+    reader = _brain_reader()
+    result = await reader.status(limit=limit)
+    if result.status != "ok" or not result.data:
+        return CaioBrainStatusResponse(
+            status=result.status,
+            error_class=result.error_class,
+            latency_ms=result.latency_ms,
+            contract=None,
+            inventory=[],
+            reads=[],
+            audit=CaioBrainAuditStatus(status="unavailable", available=False),
+            limits=CaioBrainLimits(**reader.limits_payload(collection_limit=limit)),
+        )
+    payload = dict(result.data)
+    return CaioBrainStatusResponse(
+        status=result.status,
+        error_class=result.error_class,
+        latency_ms=result.latency_ms,
+        **payload,
     )
 
 

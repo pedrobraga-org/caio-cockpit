@@ -130,6 +130,15 @@ class Settings(BaseSettings):
     caio_bridge_critiques_enabled: bool = True
     caio_bridge_timeout_s: float = 2.0
 
+    # Caio BRAIN runtime bridge (read-only). This is a local-first read model
+    # over the runtime contract; empty runtime_dir disables /caio/brain/*.
+    caio_brain_runtime_dir: str = ""
+    caio_bridge_brain_enabled: bool = True
+    caio_bridge_brain_timeout_s: float = 2.0
+    caio_brain_audit_script_path: str = ""
+    caio_brain_lcm_db_path: str = ""
+    caio_brain_facts_path: str = ""
+
     # WhatsApp pipeline V3 Postgres bridge (read-only). The DSN must point at
     # a SELECT-only role (``cockpit_ro``); see docs/cockpit_ro.sql for the
     # bootstrap script. Empty string disables the bridge and the /wa/*
