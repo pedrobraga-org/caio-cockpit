@@ -12,8 +12,9 @@ import asyncio
 import hashlib
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fastapi import APIRouter, FastAPI
@@ -201,6 +202,63 @@ async def test_brain_status_endpoint_returns_contract_inventory_and_redacted_rea
     assert TOKEN_SECRET not in vida["snippet"]
 
     assert _snapshot_tree(runtime) == before
+
+
+@pytest.mark.asyncio
+async def test_brain_summary_endpoint_alias_returns_secure_read_envelope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _make_runtime(tmp_path)
+    before = _snapshot_tree(runtime)
+
+    monkeypatch.setattr(settings, "caio_brain_runtime_dir", runtime.as_posix())
+    monkeypatch.setattr(settings, "caio_bridge_brain_enabled", True)
+    monkeypatch.setattr(settings, "caio_bridge_brain_timeout_s", 2.0)
+    monkeypatch.setattr(settings, "caio_brain_audit_script_path", "")
+    from app.api import caio as caio_api
+
+    caio_api._brain_reader.cache_clear()
+    app = _build_app()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/caio/brain/summary?limit=5")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["contract"]["runtime_truth"] == "local-first"
+    assert body["reads"]
+    first_read = body["reads"][0]
+    assert first_read["provenance"]["store"] == "caio-brain-runtime"
+    assert first_read["provenance"]["observed_at"]
+    assert first_read["freshness"]["observed_at"]
+    assert TOKEN_SECRET not in response.text
+    assert LONG_SECRET not in response.text
+    assert _snapshot_tree(runtime) == before
+
+
+def test_brain_fixture_smoke_fetches_summary_alias() -> None:
+    backend_root = Path(__file__).resolve().parents[1]
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/brain_smoke.py",
+            "--fixture",
+            "--limit",
+            "5",
+        ],
+        cwd=backend_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "BRAIN smoke ok: /api/v1/caio/brain/summary" in completed.stdout
+    assert LONG_SECRET not in completed.stdout
+    assert TOKEN_SECRET not in completed.stdout
 
 
 def test_brain_reader_rejects_path_traversal(tmp_path: Path) -> None:

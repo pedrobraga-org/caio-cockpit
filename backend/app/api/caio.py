@@ -80,9 +80,7 @@ def _critiques_reader() -> CritiquesSqliteReader:
     state_dir = settings.caio_state_dir.strip()
     enabled = settings.caio_bridge_critiques_enabled and bool(state_dir)
     db_path = (
-        Path(state_dir) / "critiques.sqlite"
-        if state_dir
-        else Path("/dev/null/critiques.sqlite")
+        Path(state_dir) / "critiques.sqlite" if state_dir else Path("/dev/null/critiques.sqlite")
     )
     return CritiquesSqliteReader(
         db_path=db_path,
@@ -119,11 +117,7 @@ def _brain_reader() -> BrainRuntimeReader:
     lcm_path = settings.caio_brain_lcm_db_path.strip()
     facts_path = settings.caio_brain_facts_path.strip()
     return BrainRuntimeReader(
-        runtime_dir=(
-            Path(runtime_dir)
-            if runtime_dir
-            else Path("/dev/null/caio-brain-runtime")
-        ),
+        runtime_dir=(Path(runtime_dir) if runtime_dir else Path("/dev/null/caio-brain-runtime")),
         enabled=enabled,
         timeout_s=settings.caio_bridge_brain_timeout_s,
         audit_script_path=Path(audit_path) if audit_path else None,
@@ -132,6 +126,16 @@ def _brain_reader() -> BrainRuntimeReader:
     )
 
 
+@router.get(
+    "/brain/summary",
+    response_model=CaioBrainStatusResponse,
+    summary="Caio BRAIN runtime read-only summary",
+    description=(
+        "Alias for /brain/status kept for operator smoke checks. Returns the "
+        "same safe local-first BRAIN read envelope: contract summary, "
+        "inventory/freshness, bounded BrainRead-style records, and audit status."
+    ),
+)
 @router.get(
     "/brain/status",
     response_model=CaioBrainStatusResponse,
@@ -291,9 +295,7 @@ async def mark_think_loop_decision(
 
     # Detect bot path: if the request authenticated via the worker token
     # header, require Discord metadata. CF Access (user) path may omit it.
-    presented_worker_token = (
-        request.headers.get("X-Cockpit-Worker-Token") or ""
-    ).strip()
+    presented_worker_token = (request.headers.get("X-Cockpit-Worker-Token") or "").strip()
     expected_worker_token = (settings.cockpit_worker_token or "").strip()
     via_worker_token = bool(
         presented_worker_token
@@ -421,8 +423,7 @@ async def start_think_loop_decision(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Cannot start: recorded decision is "
-                f"{existing.decision!r}, not 'approve'."
+                f"Cannot start: recorded decision is " f"{existing.decision!r}, not 'approve'."
             ),
         )
 
@@ -487,8 +488,7 @@ async def complete_think_loop_decision(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Cannot complete: recorded decision is "
-                f"{existing.decision!r}, not 'approve'."
+                f"Cannot complete: recorded decision is " f"{existing.decision!r}, not 'approve'."
             ),
         )
 

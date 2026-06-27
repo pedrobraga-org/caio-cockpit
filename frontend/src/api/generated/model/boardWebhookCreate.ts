@@ -13,4 +13,6 @@ export interface BoardWebhookCreate {
   /** @minLength 1 */
   description: string;
   enabled?: boolean;
+  secret?: string | null;
+  signature_header?: string | null;
 }

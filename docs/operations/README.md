@@ -30,6 +30,12 @@ docker compose -f compose.yml --env-file .env logs -f --tail=200 backend
 
 The backend supports slow-request logging via `REQUEST_LOG_SLOW_MS`.
 
+## Caio BRAIN
+
+See [Caio BRAIN Cockpit Operations](caio-brain.md) for the read-only BRAIN
+contract, audit command, local smoke, status meanings, and Docker
+non-root/read-only mount proof.
+
 ## Backups
 
 The DB runs in Postgres (Compose `db` service) and persists to the `postgres_data` named volume.
